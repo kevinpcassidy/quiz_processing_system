@@ -104,6 +104,7 @@ class QuizAppGUI:
         self.enable_side_detection = tk.BooleanVar(value=False)
         self.score_threshold = tk.DoubleVar(value=3.2)
         self.enable_gradebook_var = tk.BooleanVar(value=False)
+        self.gsheet_credentials_path = tk.StringVar(value="")
         
         # Load user preferences
         self.load_settings()
@@ -156,6 +157,7 @@ class QuizAppGUI:
                 self.enable_side_detection.set(data.get("enable_side_detection", False))
                 self.score_threshold.set(data.get("score_threshold", 3.2))
                 self.enable_gradebook_var.set(data.get("enable_gradebook_var", False))
+                self.gsheet_credentials_path.set(data.get("gsheet_credentials_path", ""))
             except Exception as e:
                 print(f"[DEBUG] Failed to load settings: {e}")
         else:
@@ -163,6 +165,7 @@ class QuizAppGUI:
             self.enable_side_detection.set(False)
             self.score_threshold.set(3.2)
             self.enable_gradebook_var.set(False)
+            self.gsheet_credentials_path.set("")
 
     def save_settings(self):
         """Save current settings to file."""
@@ -170,7 +173,8 @@ class QuizAppGUI:
             data = {
                 "enable_side_detection": self.enable_side_detection.get(),
                 "score_threshold": self.score_threshold.get(),
-                "enable_gradebook_var": self.enable_gradebook_var.get()
+                "enable_gradebook_var": self.enable_gradebook_var.get(),
+                "gsheet_credentials_path": self.gsheet_credentials_path.get()
             }
             with open(SETTINGS_FILE, "w") as f:
                 json.dump(data, f, indent=4)
@@ -278,6 +282,20 @@ class QuizAppGUI:
             ttk.Button(self.left_frame, text="View Gradebook", command = self._on_view_gradebook).pack(fill="x", pady=4)
         ttk.Button(self.left_frame, text="Advanced", command=self.setup_advanced_pop_up).pack(fill="x", pady=4)
 
+        ttk.Separator(self.left_frame, orient="horizontal").pack(fill="x", pady=(10,8))
+        gsheet_frame = ttk.Frame(self.left_frame)
+        gsheet_frame.pack(fill="x", pady=(0, 6))
+        ttk.Label(
+            gsheet_frame,
+            text="Choose JSON file for Google Sheets",
+        ).pack(side="left")
+        self.gsheet_browse_button = ttk.Button(
+            gsheet_frame,
+            text="Browse",
+            command=self._select_gsheet_credentials
+        )
+        self.gsheet_browse_button.pack(side="right")
+
 
 
 
@@ -312,6 +330,58 @@ class QuizAppGUI:
 
             # ✅ Now mark the PDF step complete again (after reset)
             self.mark_step_done("pdf")
+
+    def _select_gsheet_credentials(self):
+        file_path = filedialog.askopenfilename(
+            title="Select Google Sheets Credentials",
+            filetypes=[("JSON Files", "*.json"), ("All Files", "*.*")]
+        )
+        if file_path:
+            if not self._is_supported_gsheet_credentials_file(file_path):
+                messagebox.showerror(
+                    "Invalid Credentials File",
+                    "That JSON file is not a Google service account key.\n"
+                    "Please select a service account JSON or an OAuth client JSON."
+                )
+                return
+            self.gsheet_credentials_path.set(file_path)
+            self.save_settings()
+            try:
+                self.get_gsheet_client()
+            except (FileNotFoundError, ValueError) as e:
+                messagebox.showerror("Google Sheets Error", str(e))
+                return
+            self.gsheet_browse_button.config(text="Google Sheets Authorized")
+
+    def _load_gsheet_credentials_info(self, path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return None
+
+    def _is_service_account_file(self, data):
+        if not isinstance(data, dict):
+            return False
+        required_fields = {"type", "client_email", "token_uri", "private_key"}
+        return data.get("type") == "service_account" and required_fields.issubset(data.keys())
+
+    def _is_installed_oauth_file(self, data):
+        if not isinstance(data, dict):
+            return False
+        installed = data.get("installed")
+        if not isinstance(installed, dict):
+            return False
+        required_fields = {"client_id", "client_secret", "auth_uri", "token_uri"}
+        return required_fields.issubset(installed.keys())
+
+    def _is_supported_gsheet_credentials_file(self, path):
+        data = self._load_gsheet_credentials_info(path)
+        return self._is_service_account_file(data) or self._is_installed_oauth_file(data)
+
+    def _get_gsheet_credentials_path(self):
+        path = self.gsheet_credentials_path.get().strip()
+        return path if path else CREDENTIALS_FILE
 
 
     def _class_selected(self):
@@ -3771,7 +3841,31 @@ class QuizAppGUI:
     #Personal update to Google Sheets:
 
     def get_gsheet_client(self):
-        return gspread.service_account(filename='service_account.json')
+        credentials_path = self._get_gsheet_credentials_path()
+        if not os.path.exists(credentials_path):
+            raise FileNotFoundError(
+                f"Google Sheets credentials file not found: {credentials_path}"
+            )
+        credentials_info = self._load_gsheet_credentials_info(credentials_path)
+        if self._is_service_account_file(credentials_info):
+            return gspread.service_account(filename=credentials_path)
+        if self._is_installed_oauth_file(credentials_info):
+            creds = None
+            if os.path.exists(TOKEN_FILE):
+                creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
+            if not creds or not creds.valid:
+                if creds and creds.expired and creds.refresh_token:
+                    creds.refresh(Request())
+                else:
+                    flow = InstalledAppFlow.from_client_secrets_file(credentials_path, SCOPES)
+                    creds = flow.run_local_server(port=0)
+                with open(TOKEN_FILE, "w", encoding="utf-8") as token:
+                    token.write(creds.to_json())
+            return gspread.authorize(creds)
+        raise ValueError(
+            "Google Sheets credentials file is not a valid service account JSON "
+            "or OAuth client JSON. Please select a supported credentials file."
+        )
     
     def normalize_numeric_cells(self, data):
         """
@@ -3828,7 +3922,11 @@ class QuizAppGUI:
         Existing headers remain unchanged; new topics are appended with correct types.
         """
         tab_name = self.class_combo.get()
-        client = self.get_gsheet_client()
+        try:
+            client = self.get_gsheet_client()
+        except (FileNotFoundError, ValueError) as e:
+            messagebox.showerror("Google Sheets Error", str(e))
+            return
         sheet = client.open_by_key(sheet_id).worksheet(tab_name)
 
         print("Pulling current sheet data...")
