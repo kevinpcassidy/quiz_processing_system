@@ -3863,7 +3863,11 @@ class QuizAppGUI:
         Existing headers remain unchanged; new topics are appended with correct types.
         """
         tab_name = self.class_combo.get()
-        client = self.get_gsheet_client()
+        try:
+            client = self.get_gsheet_client()
+        except (FileNotFoundError, ValueError) as e:
+            messagebox.showerror("Google Sheets Error", str(e))
+            return
         sheet = client.open_by_key(sheet_id).worksheet(tab_name)
 
         print("Pulling current sheet data...")
