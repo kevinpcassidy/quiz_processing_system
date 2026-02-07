@@ -282,18 +282,13 @@ class QuizAppGUI:
             ttk.Button(self.left_frame, text="View Gradebook", command = self._on_view_gradebook).pack(fill="x", pady=4)
         ttk.Button(self.left_frame, text="Advanced", command=self.setup_advanced_pop_up).pack(fill="x", pady=4)
 
-        ttk.Separator(self.left_frame, orient="horizontal").pack(fill="x", pady=(10,8))
-        gsheet_frame = ttk.Frame(self.left_frame)
-        gsheet_frame.pack(fill="x", pady=(0, 6))
-        ttk.Label(
-            gsheet_frame,
-            text="Choose JSON file for Google Sheets",
-        ).pack(side="left")
-        ttk.Button(
-            gsheet_frame,
-            text="Browse",
-            command=self._select_gsheet_credentials
-        ).pack(side="right")
+
+        
+        # Select Google Sheets json authorization, usually called service_account.json
+        ttk.Separator(self.left_frame, orient="horizontal").pack(fill="x", pady=(6,6))
+        ttk.Label(self.left_frame, text="Google Sheets Auth File", style="Bold.TLabel").pack(anchor="w", pady=(8,2))
+        ttk.Entry(self.left_frame, textvariable=self.gsheet_credentials_path, width=40).pack(fill="x", pady=4)
+        ttk.Button(self.left_frame, text="Browse JSON", command=self._select_gsheet_credentials).pack(pady=4)
 
 
 
@@ -332,7 +327,7 @@ class QuizAppGUI:
 
     def _select_gsheet_credentials(self):
         file_path = filedialog.askopenfilename(
-            title="Select Google Sheets Credentials",
+            title="Select Google Sheets service_account.json",
             filetypes=[("JSON Files", "*.json"), ("All Files", "*.*")]
         )
         if file_path:
