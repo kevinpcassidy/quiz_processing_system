@@ -2175,7 +2175,7 @@ class QuizAppGUI:
         # ⏳ Wait 1500 ms (1.5 seconds), then return to calibration
         self.center_frame.after(1500, self._on_run_calibration)
 
-        # You can add a short delay or directly call your calibration restart
+        self.reset_panels()
         self._on_run_calibration()
 
     def skip_current_page(self):
