@@ -336,29 +336,41 @@ class QuizAppGUI:
             filetypes=[("JSON Files", "*.json"), ("All Files", "*.*")]
         )
         if file_path:
-            if not self._is_valid_service_account_file(file_path):
+            if not self._is_supported_gsheet_credentials_file(file_path):
                 messagebox.showerror(
                     "Invalid Credentials File",
                     "That JSON file is not a Google service account key.\n"
-                    "Please select a service account credentials JSON file."
+                    "Please select a service account JSON or an OAuth client JSON."
                 )
                 return
             self.gsheet_credentials_path.set(file_path)
             self.save_settings()
 
-    def _is_valid_service_account_file(self, path):
+    def _load_gsheet_credentials_info(self, path):
         try:
             with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+                return json.load(f)
         except (OSError, json.JSONDecodeError):
-            return False
+            return None
 
+    def _is_service_account_file(self, data):
+        if not isinstance(data, dict):
+            return False
         required_fields = {"type", "client_email", "token_uri", "private_key"}
-        return (
-            isinstance(data, dict)
-            and data.get("type") == "service_account"
-            and required_fields.issubset(data.keys())
-        )
+        return data.get("type") == "service_account" and required_fields.issubset(data.keys())
+
+    def _is_installed_oauth_file(self, data):
+        if not isinstance(data, dict):
+            return False
+        installed = data.get("installed")
+        if not isinstance(installed, dict):
+            return False
+        required_fields = {"client_id", "client_secret", "auth_uri", "token_uri"}
+        return required_fields.issubset(installed.keys())
+
+    def _is_supported_gsheet_credentials_file(self, path):
+        data = self._load_gsheet_credentials_info(path)
+        return self._is_service_account_file(data) or self._is_installed_oauth_file(data)
 
     def _get_gsheet_credentials_path(self):
         path = self.gsheet_credentials_path.get().strip()
@@ -3827,12 +3839,26 @@ class QuizAppGUI:
             raise FileNotFoundError(
                 f"Google Sheets credentials file not found: {credentials_path}"
             )
-        if not self._is_valid_service_account_file(credentials_path):
-            raise ValueError(
-                "Google Sheets credentials file is not a valid service account JSON. "
-                "Please select a service account credentials file."
-            )
-        return gspread.service_account(filename=credentials_path)
+        credentials_info = self._load_gsheet_credentials_info(credentials_path)
+        if self._is_service_account_file(credentials_info):
+            return gspread.service_account(filename=credentials_path)
+        if self._is_installed_oauth_file(credentials_info):
+            creds = None
+            if os.path.exists(TOKEN_FILE):
+                creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
+            if not creds or not creds.valid:
+                if creds and creds.expired and creds.refresh_token:
+                    creds.refresh(Request())
+                else:
+                    flow = InstalledAppFlow.from_client_secrets_file(credentials_path, SCOPES)
+                    creds = flow.run_local_server(port=0)
+                with open(TOKEN_FILE, "w", encoding="utf-8") as token:
+                    token.write(creds.to_json())
+            return gspread.authorize(creds)
+        raise ValueError(
+            "Google Sheets credentials file is not a valid service account JSON "
+            "or OAuth client JSON. Please select a supported credentials file."
+        )
     
     def normalize_numeric_cells(self, data):
         """
