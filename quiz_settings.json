@@ -1,0 +1,5 @@
+{
+    "enable_side_detection": true,
+    "score_threshold": 3.2,
+    "enable_gradebook_var": false
+}
