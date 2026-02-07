@@ -1,5 +1,6 @@
 {
-    "enable_side_detection": true,
+    "enable_side_detection": false,
     "score_threshold": 3.2,
-    "enable_gradebook_var": false
+    "enable_gradebook_var": false,
+    "gsheet_credentials_path": "C:/Users/kpcas/QuizPipeline/credentials.json"
 }
