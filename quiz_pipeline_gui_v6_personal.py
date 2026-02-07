@@ -104,6 +104,7 @@ class QuizAppGUI:
         self.enable_side_detection = tk.BooleanVar(value=False)
         self.score_threshold = tk.DoubleVar(value=3.2)
         self.enable_gradebook_var = tk.BooleanVar(value=False)
+        self.gsheet_credentials_path = tk.StringVar(value="")
         
         # Load user preferences
         self.load_settings()
@@ -156,6 +157,7 @@ class QuizAppGUI:
                 self.enable_side_detection.set(data.get("enable_side_detection", False))
                 self.score_threshold.set(data.get("score_threshold", 3.2))
                 self.enable_gradebook_var.set(data.get("enable_gradebook_var", False))
+                self.gsheet_credentials_path.set(data.get("gsheet_credentials_path", ""))
             except Exception as e:
                 print(f"[DEBUG] Failed to load settings: {e}")
         else:
@@ -163,6 +165,7 @@ class QuizAppGUI:
             self.enable_side_detection.set(False)
             self.score_threshold.set(3.2)
             self.enable_gradebook_var.set(False)
+            self.gsheet_credentials_path.set("")
 
     def save_settings(self):
         """Save current settings to file."""
@@ -170,7 +173,8 @@ class QuizAppGUI:
             data = {
                 "enable_side_detection": self.enable_side_detection.get(),
                 "score_threshold": self.score_threshold.get(),
-                "enable_gradebook_var": self.enable_gradebook_var.get()
+                "enable_gradebook_var": self.enable_gradebook_var.get(),
+                "gsheet_credentials_path": self.gsheet_credentials_path.get()
             }
             with open(SETTINGS_FILE, "w") as f:
                 json.dump(data, f, indent=4)
@@ -278,6 +282,19 @@ class QuizAppGUI:
             ttk.Button(self.left_frame, text="View Gradebook", command = self._on_view_gradebook).pack(fill="x", pady=4)
         ttk.Button(self.left_frame, text="Advanced", command=self.setup_advanced_pop_up).pack(fill="x", pady=4)
 
+        ttk.Separator(self.left_frame, orient="horizontal").pack(fill="x", pady=(10,8))
+        gsheet_frame = ttk.Frame(self.left_frame)
+        gsheet_frame.pack(fill="x", pady=(0, 6))
+        ttk.Label(
+            gsheet_frame,
+            text="Choose JSON file for Google Sheets",
+        ).pack(side="left")
+        ttk.Button(
+            gsheet_frame,
+            text="Browse",
+            command=self._select_gsheet_credentials
+        ).pack(side="right")
+
 
 
 
@@ -312,6 +329,19 @@ class QuizAppGUI:
 
             # ✅ Now mark the PDF step complete again (after reset)
             self.mark_step_done("pdf")
+
+    def _select_gsheet_credentials(self):
+        file_path = filedialog.askopenfilename(
+            title="Select Google Sheets Credentials",
+            filetypes=[("JSON Files", "*.json"), ("All Files", "*.*")]
+        )
+        if file_path:
+            self.gsheet_credentials_path.set(file_path)
+            self.save_settings()
+
+    def _get_gsheet_credentials_path(self):
+        path = self.gsheet_credentials_path.get().strip()
+        return path if path else CREDENTIALS_FILE
 
 
     def _class_selected(self):
@@ -3771,7 +3801,12 @@ class QuizAppGUI:
     #Personal update to Google Sheets:
 
     def get_gsheet_client(self):
-        return gspread.service_account(filename='service_account.json')
+        credentials_path = self._get_gsheet_credentials_path()
+        if not os.path.exists(credentials_path):
+            raise FileNotFoundError(
+                f"Google Sheets credentials file not found: {credentials_path}"
+            )
+        return gspread.service_account(filename=credentials_path)
     
     def normalize_numeric_cells(self, data):
         """
