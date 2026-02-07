@@ -282,6 +282,20 @@ class QuizAppGUI:
             ttk.Button(self.left_frame, text="View Gradebook", command = self._on_view_gradebook).pack(fill="x", pady=4)
         ttk.Button(self.left_frame, text="Advanced", command=self.setup_advanced_pop_up).pack(fill="x", pady=4)
 
+        ttk.Separator(self.left_frame, orient="horizontal").pack(fill="x", pady=(10,8))
+        gsheet_frame = ttk.Frame(self.left_frame)
+        gsheet_frame.pack(fill="x", pady=(0, 6))
+        ttk.Label(
+            gsheet_frame,
+            text="Choose JSON file for Google Sheets",
+        ).pack(side="left")
+        self.gsheet_browse_button = ttk.Button(
+            gsheet_frame,
+            text="Browse",
+            command=self._select_gsheet_credentials
+        )
+        self.gsheet_browse_button.pack(side="right")
+
 
         
         # Select Google Sheets json authorization, usually called service_account.json
@@ -3315,6 +3329,8 @@ class QuizAppGUI:
         
 
     def reset_panels(self):
+        self._clear_cached_images()
+
         # Destroy all children recursively
         for child in self.right_frame.winfo_children():
             child.destroy()
@@ -3326,6 +3342,24 @@ class QuizAppGUI:
         for child in self.center_frame.winfo_children():
             child.destroy()
         self._build_center_panel()
+
+    def _clear_cached_images(self):
+        image_attrs = ["right_full_image"]
+        for attr in image_attrs:
+            if hasattr(self, attr):
+                image = getattr(self, attr)
+                if hasattr(image, "close"):
+                    try:
+                        image.close()
+                    except Exception:
+                        pass
+                setattr(self, attr, None)
+
+        self.right_photo = None
+        self.right_img = None
+        self.right_canvas = None
+        self.current_page_index = None
+        self.skipped_pages = []
 
 
     # ---------------- RIGHT PANEL ----------------
