@@ -1,0 +1,10 @@
+pdf2image
+Pillow
+pytesseract
+rapidfuzz
+pandas
+opencv-python
+numpy
+gspread
+google-auth
+google-auth-oauthlib
