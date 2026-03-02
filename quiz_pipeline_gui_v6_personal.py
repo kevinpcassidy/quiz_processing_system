@@ -27,7 +27,7 @@ import threading
 
 #Global Variables
 STOP_PROCESSING = False
-SETTINGS_FILE = os.path.join(os.getcwd(), "quiz_settings.json")
+SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "quiz_settings.json")
 
 """Next four lines are for personal version to update to google sheets"""
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
@@ -80,10 +80,11 @@ class QuizAppGUI:
 
     
         # Dictionary to hold classes and their CSV paths
+        self.project_root = os.path.dirname(os.path.abspath(__file__))
         self.classes = {}
-        self.rosters_dir = os.path.join(os.getcwd(), "rosters")
+        self.rosters_dir = os.path.join(self.project_root, "rosters")
         os.makedirs(self.rosters_dir, exist_ok=True)
-        self.classes_file = os.path.join(os.getcwd(), "saved_classes.json")
+        self.classes_file = os.path.join(self.project_root, "saved_classes.json")
         self._load_classes()
         
         # Grading scales storage
@@ -876,7 +877,7 @@ class QuizAppGUI:
                 shutil.copy(file_path, dest_path)
 
             # Update classes dictionary and UI
-            self.classes[class_name] = dest_path
+            self.classes[class_name] = self._to_relative_roster_path(dest_path)
             self._save_classes()
             self._refresh_classes_tree()
             self._refresh_class_combobox()
@@ -888,12 +889,51 @@ class QuizAppGUI:
         # Handle user closing the window without saving
         popup.protocol("WM_DELETE_WINDOW", popup.destroy)
 
+    def _to_relative_roster_path(self, path):
+        """Normalize roster file paths to project-relative format for portability."""
+        if not path:
+            return path
+
+        normalized = os.path.normpath(path)
+
+        try:
+            if os.path.isabs(normalized):
+                normalized = os.path.relpath(normalized, self.project_root)
+        except Exception:
+            pass
+
+        return normalized.replace("\\", "/")
+
+    def _resolve_class_path(self, class_name):
+        """Return absolute path to class roster file from stored class mapping."""
+        raw_path = self.classes.get(class_name)
+        if not raw_path:
+            return None
+
+        normalized = os.path.normpath(raw_path)
+        if os.path.isabs(normalized):
+            return normalized
+
+        return os.path.join(self.project_root, normalized)
+
     def _load_classes(self):
         """Load classes info from JSON if available"""
         if os.path.exists(self.classes_file):
             try:
                 with open(self.classes_file, "r", encoding="utf-8") as f:
-                    self.classes = json.load(f)
+                    loaded = json.load(f)
+
+                if isinstance(loaded, dict):
+                    self.classes = {
+                        class_name: self._to_relative_roster_path(path)
+                        for class_name, path in loaded.items()
+                    }
+                else:
+                    self.classes = {}
+
+                # Persist normalized relative paths for cross-machine consistency.
+                with open(self.classes_file, "w", encoding="utf-8") as f:
+                    json.dump(self.classes, f, indent=2)
             except Exception as e:
                 print("Error loading classes:", e)
                 
@@ -920,7 +960,7 @@ class QuizAppGUI:
             return
 
         class_name = self.class_tree.item(selected[0], "values")[0]
-        csv_path = self.classes.get(class_name)
+        csv_path = self._resolve_class_path(class_name)
         if not csv_path or not os.path.exists(csv_path):
             messagebox.showerror("Error", f"CSV file for class '{class_name}' not found.")
             return
@@ -1020,7 +1060,7 @@ class QuizAppGUI:
 
         def confirm_delete():
             # Remove CSV file
-            csv_path = self.classes.get(class_name)
+            csv_path = self._resolve_class_path(class_name)
             if csv_path and os.path.exists(csv_path):
                 try:
                     os.remove(csv_path)
@@ -3408,7 +3448,7 @@ class QuizAppGUI:
         if not selected:
             return
         class_name = self.class_tree.item(selected[0], "values")[0]
-        csv_path = self.classes.get(class_name)
+        csv_path = self._resolve_class_path(class_name)
         if not csv_path or not os.path.exists(csv_path):
             messagebox.showerror("Error", f"CSV file for class '{class_name}' not found.")
             return
