@@ -1375,18 +1375,24 @@ class QuizAppGUI:
 
             # Collect valid scores
             scores = []
+            has_skip = False
             for v in score_vars:
                 val = v.get().strip()
                 if val:
+                    if val.lower() == "skip":
+                        has_skip = True
+                        continue
                     try:
                         scores.append(float(val))
                     except ValueError:
-                        messagebox.showwarning("Invalid Score", f"'{val}' is not a number.")
+                        messagebox.showwarning("Invalid Score", f"'{val}' is not a number or 'Skip'.")
                         return
             scores = sorted(list(set(scores)))  # remove duplicates & sort
 
             # Convert floats that are whole numbers to int for display
             display_scores = [int(s) if s.is_integer() else s for s in scores]
+            if has_skip:
+                display_scores.append("Skip")
 
             # Update JSON dictionary
             grading_scales[name] = display_scores
@@ -1414,9 +1420,15 @@ class QuizAppGUI:
             try:
                 with open(self.grading_file, "r", encoding="utf-8") as f:
                     self.grading_scales = json.load(f)
-                # Convert all scores to float (JSON may store as int)
+                # Convert loaded scores to normalized types: float values + optional "Skip"
                 for key, scores in self.grading_scales.items():
-                    self.grading_scales[key] = [float(s) for s in scores]
+                    normalized = []
+                    for s in scores:
+                        if isinstance(s, str) and s.strip().lower() == "skip":
+                            normalized.append("Skip")
+                        else:
+                            normalized.append(float(s))
+                    self.grading_scales[key] = normalized
             except Exception as e:
                 print("Error loading grading scales:", e)
                 self.grading_scales = {}
@@ -1435,8 +1447,8 @@ class QuizAppGUI:
             messagebox.showinfo("No Selection", "Please select a grading scale from the right pane to edit.")
             return
 
-        scale_name, scores_str = self.grading_tree.item(selected[0], "values")
-        scores_list = [float(s) for s in scores_str.replace(" ", "").split(",")]
+        scale_name, _ = self.grading_tree.item(selected[0], "values")
+        scores_list = self.grading_scales.get(scale_name, [])
 
         # Open the New Grade Scale window pre-filled with selection
         self._new_grade_scale_window(edit_name=scale_name, edit_scores=scores_list)
@@ -2582,12 +2594,15 @@ class QuizAppGUI:
         img_label.bind("<Button-1>", on_click)
 
         def confirm():
-            val = score_var.get().strip()
-            val = re.sub(r"[^\d\.]", "", val)
-            if not val:
-                messagebox.showwarning("Invalid Entry", "Please enter or click a valid score.")
-                return
-            self.manual_score_selection = val
+            val_raw = score_var.get().strip()
+            if val_raw.lower() == "skip":
+                self.manual_score_selection = "Skip"
+            else:
+                val = re.sub(r"[^\d\.]", "", val_raw)
+                if not val:
+                    messagebox.showwarning("Invalid Entry", "Please enter or click a valid score (or 'Skip').")
+                    return
+                self.manual_score_selection = val
             self.waiting_for_manual_score = False
             self._show_extraction_progress(f"Score saved for {student_name} - {topic_label}")
 
@@ -3546,7 +3561,11 @@ class QuizAppGUI:
         # Insert current grading scales
         if hasattr(self, "grading_scales"):
             for name, scores in self.grading_scales.items():
-                score_str = ", ".join(str(int(s)) if s.is_integer() else str(s) for s in scores)
+                score_str = ", ".join(
+                    "Skip" if isinstance(s, str) and s.strip().lower() == "skip"
+                    else (str(int(s)) if float(s).is_integer() else str(s))
+                    for s in scores
+                )
                 self.grading_tree.insert("", "end", values=(name, score_str))
 
     def _refresh_grading_tree(self):
@@ -3560,7 +3579,11 @@ class QuizAppGUI:
         # Insert current grading scales
         if hasattr(self, "grading_scales"):
             for name, scores in self.grading_scales.items():
-                score_str = ", ".join(str(int(s)) if float(s).is_integer() else str(s) for s in scores)
+                score_str = ", ".join(
+                    "Skip" if isinstance(s, str) and s.strip().lower() == "skip"
+                    else (str(int(s)) if float(s).is_integer() else str(s))
+                    for s in scores
+                )
                 self.grading_tree.insert("", "end", values=(name, score_str))
 
     def _display_pdf_first_page(self):
@@ -3974,6 +3997,8 @@ class QuizAppGUI:
 
                 # Clean score
                 if score is None or score == "":
+                    cleaned_score = ""
+                elif isinstance(score, str) and score.strip().lower() == "skip":
                     cleaned_score = ""
                 else:
                     cleaned_score = re.sub(r"[^\d\.]", "", str(score).strip())
