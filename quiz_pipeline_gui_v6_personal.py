@@ -1376,9 +1376,11 @@ class QuizAppGUI:
             # Collect valid scores
             scores = []
             has_skip = False
+            non_empty_entries = []
             for v in score_vars:
                 val = v.get().strip()
                 if val:
+                    non_empty_entries.append(val)
                     if val.lower() == "skip":
                         has_skip = True
                         continue
@@ -1392,7 +1394,21 @@ class QuizAppGUI:
             # Convert floats that are whole numbers to int for display
             display_scores = [int(s) if s.is_integer() else s for s in scores]
             if has_skip:
-                display_scores.append("Skip")
+                first_numeric_index = next(
+                    (idx for idx, val in enumerate(non_empty_entries) if val.lower() != "skip"),
+                    None
+                )
+                first_skip_index = next(
+                    (idx for idx, val in enumerate(non_empty_entries) if val.lower() == "skip"),
+                    None
+                )
+
+                # Keep existing numeric ordering, but place Skip first or last
+                # based on whether the user's first Skip entry came before numbers.
+                if first_numeric_index is None or (first_skip_index is not None and first_skip_index < first_numeric_index):
+                    display_scores = ["Skip"] + display_scores
+                else:
+                    display_scores.append("Skip")
 
             # Update JSON dictionary
             grading_scales[name] = display_scores
