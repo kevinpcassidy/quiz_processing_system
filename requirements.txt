@@ -8,3 +8,5 @@ numpy
 gspread
 google-auth
 google-auth-oauthlib
+
+openpyxl
