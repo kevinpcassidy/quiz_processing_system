@@ -41,7 +41,7 @@ Mutable user data is stored under:
 
 ## Expected spreadsheet format
 
-The application creates `CURRENTYEAR-NEXTYEAR Topic Quiz Grades`, adding `_1`, `_2`, and so on when an app-created file already uses that title. Its initial tab is `Roster 1`, with `Name` in A1.
+The application creates `CURRENTYEAR-NEXTYEAR Quiz Processing System`, adding `_1`, `_2`, and so on when an app-created file already uses that title. Its initial tab is `Roster 1`, with `Name` in A1. Local roster CSV files use the same one-column format.
 
 - Create one worksheet tab per roster.
 - Put `Name` in A1 and one student per row in column A.
@@ -84,7 +84,7 @@ For a clean Windows integration test, temporarily move `%LOCALAPPDATA%\quiz_proc
 
 ### Gradebook creation
 
-- [ ] The first title follows `CURRENTYEAR-NEXTYEAR Topic Quiz Grades`.
+- [ ] The first title follows `CURRENTYEAR-NEXTYEAR Quiz Processing System`.
 - [ ] A duplicate app-created title receives `_1`, then `_2`.
 - [ ] The initial tab is `Roster 1` and A1 is `Name`.
 - [ ] Creation opens setup guidance; **About Google Sheets** reopens it.
@@ -125,3 +125,25 @@ For a clean Windows integration test, temporarily move `%LOCALAPPDATA%\quiz_proc
 - [ ] Unrelated columns and rows are not overwritten.
 - [ ] Edited preview values, blank values, and `skip` synchronize correctly.
 - [ ] Failed sync leaves the button available for retry.
+
+
+## Home panel and mail merge
+
+The Home panel provides **Export Current Rosters for Mail Merge**. It creates one Excel workbook with one sanitized worksheet per current class and a single `Name` column. Both the left workflow panel and center Home panel use auto-hiding vertical scrollbars: mouse-wheel input is accepted only while the pointer is over overflowing content, and movement is clamped at the first and final content rows.
+
+## Extraction safety
+
+For Google-backed classes, the program snapshots the exact cached roster sequence when calibration begins. It rereads column A before any score or header write and refuses synchronization if the sequence changed or contains duplicate names. A suppressible pre-extraction confirmation is stored in preferences; the active extraction warning is always visible. After a complete roster refresh, the UI stores a timezone-aware timestamp and displays it using the Windows computer's local time.
+
+Additional manual checks:
+
+- [ ] The left scrollbar appears only after enough topics are added to overflow.
+- [ ] The center Home scrollbar appears only when content overflows.
+- [ ] Mouse-wheel scrolling stops exactly at the top and bottom and does not move unrelated Treeviews.
+- [ ] Mail-merge export contains one `Name` worksheet per local and Google-backed class.
+- [ ] Invalid/duplicate/overlong class names become unique valid Excel worksheet names.
+- [ ] Local imports reject files without `Name` in A1 and save only the first-column names.
+- [ ] The OAuth dialog exposes the exact temporary URL with Copy Link and Open buttons.
+- [ ] Suppressing the safety confirmation persists, and Advanced Settings can restore it.
+- [ ] Changing Google column A after extraction starts prevents every Sheets write.
+- [ ] Complete refreshes update the local timestamp; partial refreshes preserve the prior complete time.

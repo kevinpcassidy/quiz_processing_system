@@ -50,7 +50,7 @@ def atomic_write_json(path, data):
 def unique_gradebook_title(existing_titles, year=None):
     """Return the annual default title with a numeric suffix when necessary."""
     year = year or datetime.now().year
-    base = f"{year}-{year + 1} Topic Quiz Grades"
+    base = f"{year}-{year + 1} Quiz Processing System"
     existing_titles = set(existing_titles)
     if base not in existing_titles:
         return base
@@ -58,6 +58,131 @@ def unique_gradebook_title(existing_titles, year=None):
     while f"{base}_{suffix}" in existing_titles:
         suffix += 1
     return f"{base}_{suffix}"
+
+
+def excel_sheet_title(class_name, used_titles):
+    """Create a unique, Excel-compatible worksheet title."""
+    cleaned = re.sub(r"[:\\/?*\[\]]", " ", str(class_name)).strip() or "Roster"
+    cleaned = re.sub(r"\s+", " ", cleaned)[:31]
+    candidate = cleaned
+    suffix = 1
+    used_lower = {title.casefold() for title in used_titles}
+    while candidate.casefold() in used_lower:
+        ending = f"_{suffix}"
+        candidate = f"{cleaned[:31 - len(ending)]}{ending}"
+        suffix += 1
+    return candidate
+
+
+def read_roster_names(path):
+    """Read a standardized one-column roster whose A1 value is Name."""
+    with open(path, newline="", encoding="utf-8-sig") as handle:
+        rows = list(csv.reader(handle))
+    if not rows or not rows[0] or rows[0][0].strip().casefold() != "name":
+        raise ValueError("Roster cell A1 must contain 'Name'.")
+    return [row[0].strip() for row in rows[1:] if row and row[0].strip()]
+
+
+def write_roster_names(path, names):
+    """Atomically write the canonical local roster format."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    temporary_path = f"{path}.tmp"
+    with open(temporary_path, "w", newline="", encoding="utf-8-sig") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["Name"])
+        writer.writerows([[str(name).strip()] for name in names if str(name).strip()])
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary_path, path)
+
+
+def format_local_timestamp(iso_timestamp):
+    if not iso_timestamp:
+        return "Rosters have not been updated yet."
+    value = datetime.fromisoformat(iso_timestamp).astimezone()
+    return f"Rosters last updated on {value.strftime('%B %d, %Y')} at {value.strftime('%I:%M:%S %p')}."
+
+
+class AutoScrollableFrame:
+    """A vertical canvas/frame whose scrollbar appears only when required."""
+
+    def __init__(self, parent):
+        self.frame = ttk.Frame(parent)
+        self.canvas = tk.Canvas(self.frame, highlightthickness=0, borderwidth=0)
+        self.scrollbar = ttk.Scrollbar(self.frame, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+        self.scrollbar.grid(row=0, column=1, sticky="ns")
+        self.scrollbar.grid_remove()
+        self.frame.rowconfigure(0, weight=1)
+        self.frame.columnconfigure(0, weight=1)
+        self.content = ttk.Frame(self.canvas)
+        self.window_id = self.canvas.create_window((0, 0), window=self.content, anchor="nw")
+        self.content.bind("<Configure>", self._schedule_refresh)
+        self.canvas.bind("<Configure>", self._schedule_refresh)
+        self.toplevel = parent.winfo_toplevel()
+        self._wheel_binding = self.toplevel.bind("<MouseWheel>", self._on_mousewheel, add="+")
+        self.frame.bind("<Destroy>", self._on_destroy, add="+")
+        self._refresh_job = None
+        self._scroll_needed = False
+
+    def pack(self, **kwargs):
+        self.frame.pack(**kwargs)
+
+    def _schedule_refresh(self, _event=None):
+        try:
+            if self._refresh_job:
+                self.canvas.after_cancel(self._refresh_job)
+            self._refresh_job = self.canvas.after_idle(self._refresh)
+        except tk.TclError:
+            pass
+
+    def _refresh(self):
+        try:
+            self._refresh_job = None
+            width = max(self.canvas.winfo_width(), 1)
+            self.canvas.itemconfigure(self.window_id, width=width)
+            self.content.update_idletasks()
+            content_height = self.content.winfo_reqheight()
+            viewport_height = max(self.canvas.winfo_height(), 1)
+            self.canvas.configure(scrollregion=(0, 0, width, content_height))
+            self._scroll_needed = content_height > viewport_height
+            if self._scroll_needed:
+                self.scrollbar.grid()
+            else:
+                self.scrollbar.grid_remove()
+                self.canvas.yview_moveto(0)
+        except tk.TclError:
+            pass
+
+    def _contains_widget(self, widget):
+        while widget is not None:
+            if widget in (self.canvas, self.content):
+                return True
+            widget = getattr(widget, "master", None)
+        return False
+
+    def _on_mousewheel(self, event):
+        try:
+            pointed = self.canvas.winfo_containing(event.x_root, event.y_root)
+            if not self._scroll_needed or not self._contains_widget(pointed):
+                return None
+            top, bottom = self.canvas.yview()
+            direction = -1 if event.delta > 0 else 1
+            if (direction < 0 and top <= 0) or (direction > 0 and bottom >= 1):
+                return "break"
+            self.canvas.yview_scroll(direction, "units")
+            return "break"
+        except tk.TclError:
+            return None
+
+    def _on_destroy(self, event):
+        if event.widget is self.frame and self._wheel_binding:
+            try:
+                self.toplevel.unbind("<MouseWheel>", self._wheel_binding)
+            except tk.TclError:
+                pass
+            self._wheel_binding = None
 
 class QuizAppGUI:
     def __init__(self, root):
@@ -76,10 +201,14 @@ class QuizAppGUI:
         self.paned.pack(fill="both", expand=True)
 
         # Left, center, right frames (add 20px side padding)
-        self.left_frame = ttk.Frame(self.paned, padding=(20, 12, 20, 12))
+        self.left_outer_frame = ttk.Frame(self.paned)
+        self.left_scroll = AutoScrollableFrame(self.left_outer_frame)
+        self.left_scroll.pack(fill="both", expand=True)
+        self.left_frame = self.left_scroll.content
+        self.left_frame.configure(padding=(20, 12, 20, 12))
         self.center_frame = ttk.Frame(self.paned, padding=12)
         self.right_frame = ttk.Frame(self.paned, padding=12)
-        self.paned.add(self.left_frame, weight=2)
+        self.paned.add(self.left_outer_frame, weight=2)
         self.paned.add(self.center_frame, weight=1)
         self.paned.add(self.right_frame, weight=3)
 
@@ -144,7 +273,11 @@ class QuizAppGUI:
         self.google_sheets_enabled_var = tk.BooleanVar(value=False)
         self.google_connection_status_var = tk.StringVar(value="Not connected")
         self.google_sheet_title_var = tk.StringVar(value="None created")
+        self.google_roster_status_var = tk.StringVar(value="Rosters have not been updated yet.")
+        self.show_google_extraction_warning_var = tk.BooleanVar(value=True)
         self.google_spreadsheet_id = ""
+        self.google_rosters_last_updated = ""
+        self.google_roster_snapshot = None
         
         # Load user preferences
         self.load_settings()
@@ -199,6 +332,9 @@ class QuizAppGUI:
                 self.score_threshold.set(data.get("score_threshold", 3.2))
                 self.enable_gradebook_var.set(data.get("enable_gradebook_var", False))
                 self.google_sheets_enabled_var.set(data.get("google_sheets_enabled", False))
+                self.show_google_extraction_warning_var.set(data.get("show_google_extraction_warning", True))
+                self.google_rosters_last_updated = data.get("google_rosters_last_updated", "")
+                self.google_roster_status_var.set(format_local_timestamp(self.google_rosters_last_updated))
                 selected = data.get("google_spreadsheet", {})
                 self.google_spreadsheet_id = selected.get("id", "")
                 self.google_sheet_title_var.set(selected.get("title", "None created"))
@@ -210,6 +346,7 @@ class QuizAppGUI:
             self.score_threshold.set(3.2)
             self.enable_gradebook_var.set(False)
             self.google_sheets_enabled_var.set(False)
+            self.show_google_extraction_warning_var.set(True)
 
     def save_settings(self):
         """Save current settings to file."""
@@ -219,6 +356,8 @@ class QuizAppGUI:
                 "score_threshold": self.score_threshold.get(),
                 "enable_gradebook_var": self.enable_gradebook_var.get(),
                 "google_sheets_enabled": self.google_sheets_enabled_var.get(),
+                "show_google_extraction_warning": self.show_google_extraction_warning_var.get(),
+                "google_rosters_last_updated": getattr(self, "google_rosters_last_updated", ""),
                 "google_spreadsheet": {
                     "id": self.google_spreadsheet_id,
                     "title": self.google_sheet_title_var.get()
@@ -266,7 +405,7 @@ class QuizAppGUI:
             ("grading", "Select Grading Scale"),
             ("topics", "Save Topics"),
             ("calibration", "Calibration"),
-            ("download", "Download CSV"),
+            ("download", "Sync to Sheets or Export Grades"),
         ]
 
         for key, label_text in steps:
@@ -348,55 +487,6 @@ class QuizAppGUI:
             ttk.Button(self.left_frame, text="View Local Gradebook", command=self._on_view_gradebook).pack(fill="x", pady=4)
         ttk.Button(self.left_frame, text="Advanced", command=self.setup_advanced_pop_up).pack(fill="x", pady=4)
 
-        ttk.Separator(self.left_frame, orient="horizontal").pack(fill="x", pady=(10,8))
-        ttk.Label(self.left_frame, text="Google Sheets Gradebook", style="Header.TLabel").pack(anchor="w")
-        ttk.Checkbutton(
-            self.left_frame,
-            text="Manage rosters and grades with Google Sheets",
-            variable=self.google_sheets_enabled_var,
-            command=self._on_google_opt_in_changed,
-        ).pack(anchor="w", pady=(5, 3))
-
-        self.google_controls_frame = ttk.Frame(self.left_frame)
-        self.google_controls_frame.pack(fill="x")
-        ttk.Label(
-            self.google_controls_frame,
-            textvariable=self.google_connection_status_var,
-        ).pack(anchor="w")
-        ttk.Label(
-            self.google_controls_frame,
-            textvariable=self.google_sheet_title_var,
-            wraplength=300,
-        ).pack(anchor="w", pady=(0, 4))
-        self.google_authorize_button = ttk.Button(
-            self.google_controls_frame,
-            text="Authorize Google Sheets",
-            command=self._reauthorize_google,
-        )
-        self.google_authorize_button.pack(fill="x", pady=2)
-        self.google_create_button = ttk.Button(
-            self.google_controls_frame,
-            text="Create Google Sheets Gradebook",
-            command=self._confirm_create_google_gradebook,
-        )
-        self.google_create_button.pack(fill="x", pady=2)
-        self.google_open_button = ttk.Button(
-            self.google_controls_frame,
-            text="Open Google Sheets Gradebook",
-            command=self._open_google_gradebook,
-        )
-        self.google_open_button.pack(fill="x", pady=2)
-        ttk.Button(
-            self.google_controls_frame,
-            text="Refresh Rosters Now",
-            command=lambda: self._refresh_google_rosters(background=True, notify=True),
-        ).pack(fill="x", pady=2)
-        ttk.Button(
-            self.google_controls_frame,
-            text="About Google Sheets",
-            command=self._show_google_sheets_help,
-        ).pack(fill="x", pady=2)
-        self._update_google_controls_visibility()
 
 
 
@@ -653,6 +743,12 @@ class QuizAppGUI:
             onvalue=True,
             offvalue=False            
         ).pack(anchor="center", padx=10, pady=5)
+
+        ttk.Checkbutton(
+            content_frame,
+            text="Show Google Sheets safety confirmation before extraction",
+            variable=self.show_google_extraction_warning_var,
+        ).pack(anchor="center", padx=10, pady=5)
         
         # Separator
         ttk.Separator(content_frame, orient="horizontal").pack(fill="x", pady=15)
@@ -740,6 +836,7 @@ class QuizAppGUI:
             self.enable_side_detection.set(False)
             self.score_threshold.set(3.2)
             self.enable_gradebook_var.set(False)
+            self.show_google_extraction_warning_var.set(True)
 
         ttk.Button(button_frame, text="Restore Defaults", command=restore_defaults).pack(side="left", padx=10)
 
@@ -770,81 +867,140 @@ class QuizAppGUI:
 
     # ---------------- CENTER PANEL ----------------
     def _build_center_panel(self):
-        # Clear any existing widgets in the center frame
+        """Build the scrollable Home content shown between workflow screens."""
         for widget in self.center_frame.winfo_children():
             widget.destroy()
-        
-        # Heading at top
+        self.center_home_scroll = AutoScrollableFrame(self.center_frame)
+        self.center_home_scroll.pack(fill="both", expand=True)
+        home = self.center_home_scroll.content
+
+        ttk.Label(home, text="Quiz Processing System", font=("TkDefaultFont", 20, "bold"), anchor="center").pack(pady=(30, 10))
         ttk.Label(
-            self.center_frame,
-            text="Quiz Processing System",
-            font=("TkDefaultFont", 20, "bold"),
-            anchor="center"
-        ).pack(pady=(30, 10))
-        
-        # Description below heading
-        ttk.Label(
-            self.center_frame,
-            text="Welcome to the Quiz Processing System. \n"
-                "Please begin by following the steps on the left frame.\n\n",
-            wraplength=self.center_frame.winfo_width() - 20,
-            justify="center"
+            home,
+            text="Welcome to the Quiz Processing System.\nPlease begin by following the steps on the left frame.\n",
+            wraplength=420,
+            justify="center",
         ).pack(pady=(0, 10))
-        
-        # Horizontal line
-        ttk.Separator(self.center_frame, orient="horizontal").pack(fill="x", pady=(0, 20))
-        
-        # YouTub heading
-        ttk.Label(
-            self.center_frame,
-            text="YouTube Tutorials:",
-            font=("TkDefaultFont", 12, "bold"),
-            anchor="center"
-        ).pack(pady=(0, 10))
-        
-        # YouTube clickable link
+        ttk.Separator(home, orient="horizontal").pack(fill="x", pady=(0, 20))
+        ttk.Label(home, text="YouTube Tutorials:", font=("TkDefaultFont", 12, "bold")).pack(pady=(0, 10))
         link_label = tk.Label(
-            self.center_frame,
+            home,
             text="Come visit me at:\nhttps://www.youtube.com/@KevinsTeacherTech",
             fg="blue",
             cursor="hand2",
-            justify="center"
+            justify="center",
         )
         link_label.pack(pady=(5, 20))
-        
-        def open_youtube_link(event):
-            webbrowser.open("https://www.youtube.com/@KevinsTeacherTech")
-        
-        link_label.bind("<Button-1>", open_youtube_link)
-        
-        # Horizontal line
-        ttk.Separator(self.center_frame, orient="horizontal").pack(fill="x", pady=(0, 20))
-        
-        # Microsoft Word Templates heading
-        ttk.Label(
-            self.center_frame,
-            text="Microsoft Word Templates:",
-            font=("TkDefaultFont", 12, "bold"),
-            anchor="center"
-        ).pack(pady=(0, 10))
-        
-        # Template links
+        link_label.bind("<Button-1>", lambda _event: webbrowser.open("https://www.youtube.com/@KevinsTeacherTech"))
+
+        ttk.Separator(home, orient="horizontal").pack(fill="x", pady=(0, 20))
+        ttk.Label(home, text="Microsoft Word Templates:", font=("TkDefaultFont", 12, "bold")).pack(pady=(0, 10))
         templates = [
             ("One-Page Quiz Template", "https://docs.google.com/document/d/1EF0sel2g1I94xmV5VCxS2j-vzveeEm6P/export?format=docx"),
-            ("Two-Page Quiz Template", "https://docs.google.com/document/d/1xk3f2LEKAum9tqkyix8UkZryegbYsVlA/export?format=docx")
+            ("Two-Page Quiz Template", "https://docs.google.com/document/d/1xk3f2LEKAum9tqkyix8UkZryegbYsVlA/export?format=docx"),
         ]
-        
         for name, url in templates:
-            link = tk.Label(
-                self.center_frame,
-                text=name,
-                fg="blue",
-                cursor="hand2",
-                justify="center"
-            )
+            link = tk.Label(home, text=name, fg="blue", cursor="hand2", justify="center")
             link.pack(pady=2)
-            link.bind("<Button-1>", lambda e, url=url: webbrowser.open(url))
+            link.bind("<Button-1>", lambda _event, url=url: webbrowser.open(url))
 
+        ttk.Separator(home, orient="horizontal").pack(fill="x", pady=15)
+        ttk.Button(
+            home,
+            text="Export Current Rosters for Mail Merge",
+            command=self._export_rosters_for_mail_merge,
+        ).pack(fill="x", padx=18, pady=(0, 10))
+        ttk.Separator(home, orient="horizontal").pack(fill="x", pady=15)
+        self._build_google_controls(home)
+        ttk.Frame(home, height=15).pack()
+
+    def _build_google_controls(self, parent):
+        ttk.Label(parent, text="Google Sheets Gradebook", style="Header.TLabel").pack(anchor="w", padx=18)
+        ttk.Checkbutton(
+            parent,
+            text="Manage rosters and grades with Google Sheets",
+            variable=self.google_sheets_enabled_var,
+            command=self._on_google_opt_in_changed,
+        ).pack(anchor="w", padx=18, pady=(5, 3))
+        self.google_controls_frame = ttk.Frame(parent)
+        self.google_controls_frame.pack(fill="x", padx=18)
+        ttk.Label(self.google_controls_frame, textvariable=self.google_connection_status_var, wraplength=400).pack(anchor="w")
+        ttk.Label(self.google_controls_frame, textvariable=self.google_sheet_title_var, wraplength=400).pack(anchor="w", pady=(0, 4))
+        ttk.Label(self.google_controls_frame, textvariable=self.google_roster_status_var, wraplength=400).pack(anchor="w", pady=(0, 4))
+        self.google_authorization_help_var = tk.StringVar(
+            value="If the correct browser profile does not open, use the authorization dialog to copy the link."
+        )
+        ttk.Label(
+            self.google_controls_frame,
+            textvariable=self.google_authorization_help_var,
+            wraplength=400,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 4))
+        self.google_authorize_button = ttk.Button(
+            self.google_controls_frame,
+            text="Reconnect / Change Google Account" if os.path.exists(self.token_file) else "Authorize Google Sheets",
+            command=self._reauthorize_google,
+        )
+        self.google_authorize_button.pack(fill="x", pady=2)
+        self.google_create_button = ttk.Button(
+            self.google_controls_frame,
+            text="Create Google Sheets Gradebook",
+            command=self._confirm_create_google_gradebook,
+        )
+        self.google_create_button.pack(fill="x", pady=2)
+        self.google_open_button = ttk.Button(
+            self.google_controls_frame,
+            text="Open Google Sheets Gradebook",
+            command=self._open_google_gradebook,
+        )
+        self.google_open_button.pack(fill="x", pady=2)
+        ttk.Button(
+            self.google_controls_frame,
+            text="Refresh Rosters Now",
+            command=lambda: self._refresh_google_rosters(background=True, notify=True),
+        ).pack(fill="x", pady=2)
+        ttk.Button(
+            self.google_controls_frame,
+            text="About Google Sheets",
+            command=self._show_google_sheets_help,
+        ).pack(fill="x", pady=2)
+        self._update_google_controls_visibility()
+
+    def _export_rosters_for_mail_merge(self):
+        if not self.classes:
+            messagebox.showinfo("No Classes", "There are no class rosters to export.")
+            return
+        output_path = filedialog.asksaveasfilename(
+            title="Export Current Rosters for Mail Merge",
+            defaultextension=".xlsx",
+            initialfile="Quiz Processing System Rosters.xlsx",
+            filetypes=[("Excel files", "*.xlsx")],
+        )
+        if not output_path:
+            return
+        used_titles = []
+        exported_students = 0
+        failures = []
+        try:
+            with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+                for class_name in self.classes:
+                    try:
+                        names = read_roster_names(self._resolve_class_path(class_name))
+                    except (OSError, ValueError) as error:
+                        names = []
+                        failures.append(f"{class_name}: {error}")
+                    title = excel_sheet_title(class_name, used_titles)
+                    used_titles.append(title)
+                    pd.DataFrame({"Name": names}).to_excel(writer, sheet_name=title, index=False)
+                    exported_students += len(names)
+            summary = f"Exported {len(self.classes)} class roster(s) and {exported_students} student(s)."
+            if failures:
+                summary += "\n\nSome rosters could not be read and were exported empty:\n" + "\n".join(failures)
+                messagebox.showwarning("Rosters Exported", summary)
+            else:
+                messagebox.showinfo("Rosters Exported", summary)
+        except Exception as error:
+            messagebox.showerror("Roster Export Error", f"Could not export the workbook:\n{error}")
 
 
     #Handle classes saving, loading, deleting, etc.
@@ -951,18 +1107,21 @@ class QuizAppGUI:
             os.makedirs(self.rosters_dir, exist_ok=True)
             dest_path = os.path.join(self.rosters_dir, f"{class_name}.csv")
 
-            # If Excel → convert to CSV
-            if file_path.lower().endswith((".xlsx", ".xls")):
-                try:
-                    import pandas as pd
-                    df = pd.read_excel(file_path)
-                    df.to_csv(dest_path, index=False, encoding="utf-8-sig")
-                except Exception as e:
-                    messagebox.showerror("Conversion Error",
-                        f"Could not convert Excel file:\n{e}")
-                    return
-            else:
-                shutil.copy(file_path, dest_path)
+            try:
+                if file_path.lower().endswith((".xlsx", ".xls")):
+                    dataframe = pd.read_excel(file_path)
+                    if not len(dataframe.columns) or str(dataframe.columns[0]).strip().casefold() != "name":
+                        raise ValueError("Roster cell A1 must contain 'Name'.")
+                    names = [str(value).strip() for value in dataframe.iloc[:, 0].dropna() if str(value).strip()]
+                else:
+                    names = read_roster_names(file_path)
+                write_roster_names(dest_path, names)
+            except Exception as error:
+                messagebox.showerror(
+                    "Roster Format Error",
+                    f"Could not import the roster. Cell A1 must contain 'Name', with one student per row in column A.\n\n{error}",
+                )
+                return
 
             # Update classes dictionary and UI
             self.classes[class_name] = {
@@ -1160,6 +1319,7 @@ class QuizAppGUI:
 
         # Directions
         ttk.Label(popup, text="Your class roster will open now.\n"
+                              "Keep 'Name' in cell A1 and one student per row in column A.\n"
                               "Please make any changes and save before closing.\n"
                               "If prompted, you may need to use a program like Microsoft Excel to make the changes.",
                   wraplength=380, justify="left").pack(pady=20, padx=10)
@@ -1357,7 +1517,8 @@ class QuizAppGUI:
         canvas.bind("<Leave>", _unbind_mousewheel)
 
         # Text instructions
-        text = ("Use a gradebook program to export a CSV roster. \n\n"
+        text = ("Use a gradebook program to export a CSV roster. Put 'Name' in cell A1, "
+                "with one student per row in column A.\n\n"
                 "We recommend creating a roster of all the classes of one subject, "
                 "so if you teach two different subjects or grade level classes, each would be its own class.\n"
                 "Here is a picture of a properly formatted CSV file.\n"
@@ -1703,7 +1864,55 @@ class QuizAppGUI:
 
     #Calibrate Extraction functions
 
+    def _selected_class_is_google(self):
+        class_info = self.classes.get(self.class_combo.get(), {}) if hasattr(self, "class_combo") else {}
+        return (isinstance(class_info, dict)
+                and class_info.get("source") == "google_sheet"
+                and not class_info.get("needs_remapping"))
+
+    def _confirm_google_extraction_safety(self):
+        result = {"continue": False}
+        popup = tk.Toplevel(self.root)
+        popup.title("Google Sheets Safety Warning")
+        popup.transient(self.root)
+        popup.grab_set()
+        popup.geometry("560x230")
+        ttk.Label(
+            popup,
+            text=("Do not make any changes to the Google file while data is being extracted and updated. "
+                  "Quiz Processing System will verify that the roster has not changed before synchronizing scores."),
+            wraplength=510,
+            justify="left",
+        ).pack(padx=20, pady=(20, 12))
+        suppress_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(popup, text="Don't show this warning again", variable=suppress_var).pack(anchor="w", padx=20)
+        buttons = ttk.Frame(popup)
+        buttons.pack(pady=18)
+
+        def proceed():
+            result["continue"] = True
+            if suppress_var.get():
+                self.show_google_extraction_warning_var.set(False)
+                self.save_settings()
+            popup.destroy()
+
+        ttk.Button(buttons, text="Cancel", command=popup.destroy).pack(side="left", padx=8)
+        ttk.Button(buttons, text="Continue", command=proceed).pack(side="left", padx=8)
+        popup.protocol("WM_DELETE_WINDOW", popup.destroy)
+        self.root.wait_window(popup)
+        return result["continue"]
+
     def _on_run_calibration(self):
+        if self._selected_class_is_google():
+            if self.show_google_extraction_warning_var.get() and not self._confirm_google_extraction_safety():
+                return
+            try:
+                self.google_roster_snapshot = read_roster_names(self._resolve_class_path(self.class_combo.get()))
+            except (OSError, ValueError) as error:
+                messagebox.showerror("Google Roster Error", f"Refresh this roster before extraction.\n\n{error}")
+                return
+        else:
+            self.google_roster_snapshot = None
         # --- Clear center and right frames ---
         for widget in self.center_frame.winfo_children():
             widget.destroy()
@@ -1766,6 +1975,14 @@ class QuizAppGUI:
 
         # --- Add buttons for Name and Topic boxes ---
         ttk.Label(self.center_frame, text="Calibrate Data Extraction", style="Header.TLabel").pack(pady=(0, 10))
+        if self._selected_class_is_google():
+            ttk.Label(
+                self.center_frame,
+                text="Do not make any changes to the Google file while data is being extracted and updated.",
+                foreground="#b00020",
+                wraplength=max(self.center_frame.winfo_width() - 10, 250),
+                justify="left",
+            ).pack(pady=(0, 10))
 
         ttk.Button(self.center_frame, text="Set Name Area", command=lambda: self._enable_box_drawing(self.right_canvas)).pack(fill="x", pady=4)
 
@@ -2197,6 +2414,15 @@ class QuizAppGUI:
         )
         stop_btn.pack(pady=(4, 20))
 
+        if self._selected_class_is_google():
+            ttk.Label(
+                self.center_frame,
+                text="Do not make any changes to the Google file while data is being extracted and updated.",
+                foreground="#b00020",
+                wraplength=max(self.center_frame.winfo_width() - 10, 250),
+                justify="left",
+            ).pack(pady=(0, 15))
+
 
         ttk.Label(
             self.right_frame,
@@ -2250,10 +2476,12 @@ class QuizAppGUI:
         # In run_data_extraction, after loading CSV
         self.roster_names = []
         if os.path.exists(roster_file):
-            with open(roster_file, newline="", encoding="utf-8-sig") as csvfile:
-                reader = csv.reader(csvfile)
-                self.roster_names = [row[0].strip() for row in reader if row]
-            print(f"Loaded {len(self.roster_names)} students from {roster_file}")
+            try:
+                self.roster_names = read_roster_names(roster_file)
+                print(f"Loaded {len(self.roster_names)} students from {roster_file}")
+            except ValueError as error:
+                messagebox.showerror("Roster Format Error", str(error))
+                return
         else:
             print(f"Roster file not found for {class_name}; proceeding without roster matching.")
 
@@ -3357,18 +3585,18 @@ class QuizAppGUI:
         Extra rows from extraction are preserved at the bottom.
         """
 
-        roster_file_name = f"{roster_name.replace('_', ' ')}.csv"
-        roster_path = os.path.join("rosters", roster_file_name)
+        class_name = roster_name.replace('_', ' ')
+        roster_path = self._resolve_class_path(class_name)
 
-        if not os.path.exists(roster_path):
+        if not roster_path or not os.path.exists(roster_path):
             print(f"[WARN] Roster file not found: {roster_path}")
             return df_gradebook
 
-        df_roster = pd.read_csv(roster_path, header=None)
-        if str(df_roster.iloc[0, 0]).strip().lower() == "name":
-            df_roster = pd.read_csv(roster_path)  # read normally with header
-        else:
-            df_roster.rename(columns={df_roster.columns[0]: "Name"}, inplace=True)
+        try:
+            df_roster = pd.DataFrame({"Name": read_roster_names(roster_path)})
+        except ValueError as error:
+            print(f"[ERROR] {error}: {roster_path}")
+            return df_gradebook
 
         if "Name" not in df_roster.columns:
             print(f"[ERROR] 'Name' column missing from roster: {roster_path}")
@@ -3719,17 +3947,13 @@ class QuizAppGUI:
         tree.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side="right", fill="y")
 
-        # Populate treeview from CSV
-        with open(csv_path, "r", encoding="utf-8-sig") as f:
-            for line in f:
-                name = line.strip()
-                while name.startswith('"') or name.startswith("'"):
-                    name = name[1:]
-                while name.endswith('"') or name.endswith("'"):
-                    name = name[:-1]
-                name = name.strip()
-                if name:
-                    tree.insert("", "end", values=(name,))
+        try:
+            for name in read_roster_names(csv_path):
+                tree.insert("", "end", values=(name,))
+        except ValueError as error:
+            win.destroy()
+            messagebox.showerror("Roster Format Error", str(error))
+            return
 
 
         # Mousewheel binding
@@ -4129,7 +4353,7 @@ class QuizAppGUI:
 
     #Personal update to Google Sheets:
 
-    def get_gsheet_client(self, interactive=False):
+    def get_gsheet_client(self, interactive=False, authorization_url_callback=None):
         """Return a user-authorized client; never use a distributed service account."""
         credentials = None
         if os.path.exists(self.token_file):
@@ -4153,18 +4377,84 @@ class QuizAppGUI:
                     f"OAuth client configuration not found: {self.oauth_client_file}"
                 )
             flow = InstalledAppFlow.from_client_secrets_file(self.oauth_client_file, SCOPES)
-            credentials = flow.run_local_server(port=0, open_browser=True)
+            browser_name = None
+            if authorization_url_callback:
+                class AuthorizationBrowser:
+                    def open(self, url, new=0, autoraise=True):
+                        authorization_url_callback(url)
+                        return webbrowser.open(url, new=new, autoraise=autoraise)
+
+                browser_name = f"quiz-processing-system-{id(flow)}"
+                webbrowser.register(browser_name, None, AuthorizationBrowser())
+            credentials = flow.run_local_server(
+                port=0,
+                open_browser=True,
+                browser=browser_name,
+                timeout_seconds=300,
+                authorization_prompt_message=None,
+            )
             atomic_write_json(self.token_file, json.loads(credentials.to_json()))
         return gspread.authorize(credentials)
 
     def _authorize_google_interactive(self):
-        try:
-            self.get_gsheet_client(interactive=True)
-            self.google_connection_status_var.set("Google Sheets: Connected")
+        popup = tk.Toplevel(self.root)
+        popup.title("Connect Google Sheets")
+        popup.transient(self.root)
+        popup.grab_set()
+        popup.geometry("720x270")
+        ttk.Label(
+            popup,
+            text=("A browser window should open for Google authorization. If your browser window doesn't open, "
+                  "copy and paste this link in a browser window for the Google Account you want to connect."),
+            wraplength=670,
+            justify="left",
+        ).pack(padx=20, pady=(20, 10))
+        authorization_url_var = tk.StringVar(value="Preparing authorization link…")
+        link_entry = ttk.Entry(popup, textvariable=authorization_url_var, state="readonly")
+        link_entry.pack(fill="x", padx=20, pady=5)
+        status_var = tk.StringVar(value="Waiting for Google authorization…")
+        ttk.Label(popup, textvariable=status_var).pack(pady=5)
+        buttons = ttk.Frame(popup)
+        buttons.pack(pady=10)
+
+        def copy_link():
+            url = authorization_url_var.get()
+            if url.startswith("http"):
+                self.root.clipboard_clear()
+                self.root.clipboard_append(url)
+                status_var.set("Authorization link copied. Paste it into the desired browser profile.")
+
+        ttk.Button(buttons, text="Copy Link", command=copy_link).pack(side="left", padx=5)
+        ttk.Button(
+            buttons,
+            text="Open in Default Browser",
+            command=lambda: webbrowser.open(authorization_url_var.get()) if authorization_url_var.get().startswith("http") else None,
+        ).pack(side="left", padx=5)
+        ttk.Button(buttons, text="Close", command=popup.destroy).pack(side="left", padx=5)
+
+        def show_url(url):
+            self.root.after(0, lambda: authorization_url_var.set(url) if popup.winfo_exists() else None)
+
+        def worker():
+            try:
+                self.get_gsheet_client(interactive=True, authorization_url_callback=show_url)
+                self.root.after(0, lambda: self._finish_google_authorization(popup, status_var))
+            except Exception as error:
+                self.root.after(0, lambda error=error: self._show_google_authorization_failure(popup, status_var, error))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _finish_google_authorization(self, popup, status_var):
+        self.google_connection_status_var.set("Google Sheets: Connected")
+        if hasattr(self, "google_authorize_button") and self.google_authorize_button.winfo_exists():
             self.google_authorize_button.configure(text="Reconnect / Change Google Account")
-            self.save_settings()
-        except Exception as error:
-            messagebox.showerror("Google Authorization Error", str(error))
+        if popup.winfo_exists():
+            status_var.set("Google authorization completed successfully. You may close this window.")
+        self.save_settings()
+
+    def _show_google_authorization_failure(self, popup, status_var, error):
+        if popup.winfo_exists():
+            status_var.set(f"Authorization failed: {error}")
 
     def _reauthorize_google(self):
         if os.path.exists(self.token_file):
@@ -4199,7 +4489,8 @@ class QuizAppGUI:
 
     def _google_startup_success(self, title):
         self.google_connection_status_var.set("Google Sheets: Connected")
-        self.google_authorize_button.configure(text="Reconnect / Change Google Account")
+        if hasattr(self, "google_authorize_button") and self.google_authorize_button.winfo_exists():
+            self.google_authorize_button.configure(text="Reconnect / Change Google Account")
         if title:
             self.google_sheet_title_var.set(title)
             self.save_settings()
@@ -4258,7 +4549,7 @@ class QuizAppGUI:
         popup.protocol("WM_DELETE_WINDOW", cancel)
 
     def _update_google_controls_visibility(self):
-        if not hasattr(self, "google_controls_frame"):
+        if not hasattr(self, "google_controls_frame") or not self.google_controls_frame.winfo_exists():
             return
         if self.google_sheets_enabled_var.get():
             self.google_controls_frame.pack(fill="x")
@@ -4283,7 +4574,7 @@ class QuizAppGUI:
             if not confirmed:
                 return
         try:
-            client = self.get_gsheet_client(interactive=True)
+            client = self.get_gsheet_client(interactive=False)
             known_titles = {item.get("name", "") for item in client.list_spreadsheet_files()}
             title = unique_gradebook_title(known_titles)
             spreadsheet = client.create(title)
@@ -4302,6 +4593,8 @@ class QuizAppGUI:
             self.save_settings()
             self._update_google_controls_visibility()
             self._show_google_sheets_help(created=True)
+        except PermissionError:
+            messagebox.showinfo("Authorize Google Sheets", "Authorize Google Sheets before creating a gradebook.")
         except Exception as error:
             messagebox.showerror("Google Sheets Error", f"Could not create the gradebook:\n{error}")
 
@@ -4361,15 +4654,11 @@ class QuizAppGUI:
             if not column or column[0].strip().casefold() != "name":
                 raise ValueError(f"Tab '{worksheet.title}' must have 'Name' in cell A1.")
             names = [name.strip() for name in column[1:] if name.strip()]
+            duplicates = sorted({name for name in names if names.count(name) > 1})
+            if duplicates:
+                raise ValueError(f"Duplicate student name(s) in column A: {', '.join(duplicates)}")
             roster_path = self._resolve_class_path(class_name)
-            os.makedirs(os.path.dirname(roster_path), exist_ok=True)
-            temporary_path = f"{roster_path}.tmp"
-            with open(temporary_path, "w", newline="", encoding="utf-8-sig") as handle:
-                writer = csv.writer(handle)
-                writer.writerows([[name] for name in names])
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary_path, roster_path)
+            write_roster_names(roster_path, names)
             class_info["worksheet_title"] = worksheet.title
             class_info["last_seen_headers"] = headers
             class_info["last_refreshed_at"] = datetime.now(timezone.utc).isoformat()
@@ -4404,7 +4693,15 @@ class QuizAppGUI:
             refresh()
 
     def _finish_roster_refresh(self, succeeded, total, notify):
-        self.google_connection_status_var.set(f"Rosters refreshed: {succeeded} of {total}")
+        if total == 0:
+            self.google_roster_status_var.set("No Google Sheets rosters are currently mapped.")
+        elif succeeded == total:
+            self.google_rosters_last_updated = datetime.now().astimezone().isoformat()
+            self.google_roster_status_var.set(format_local_timestamp(self.google_rosters_last_updated))
+            self.save_settings()
+        else:
+            previous = format_local_timestamp(self.google_rosters_last_updated)
+            self.google_roster_status_var.set(f"Roster refresh incomplete: {succeeded} of {total} updated. {previous}")
         if notify:
             if succeeded == total:
                 messagebox.showinfo("Google Rosters", f"Refreshed {succeeded} of {total} rosters.")
@@ -4480,6 +4777,17 @@ class QuizAppGUI:
             headers = worksheet.row_values(1)
             if not headers or headers[0].strip().casefold() != "name":
                 raise ValueError("The mapped tab must have 'Name' in cell A1.")
+            names = [name.strip() for name in worksheet.col_values(1)[1:] if name.strip()]
+            duplicates = sorted({name for name in names if names.count(name) > 1})
+            if duplicates:
+                raise ValueError(f"Duplicate student name(s) in column A: {', '.join(duplicates)}")
+            if self.google_roster_snapshot is None or names != self.google_roster_snapshot:
+                messagebox.showerror(
+                    "Google Roster Changed",
+                    "The Google Sheets roster changed after extraction began. No scores were written. "
+                    "Refresh the roster and review the extracted grades before trying again.",
+                )
+                return False
             header_lookup = {value.strip().casefold(): index + 1 for index, value in enumerate(headers) if value.strip()}
             topic_names = [value.get().strip() for value in self.topic_vars if value.get().strip()]
             for topic in topic_names:
@@ -4489,8 +4797,7 @@ class QuizAppGUI:
                     header_lookup[key] = len(headers)
                     worksheet.update_cell(1, len(headers), topic)
 
-            names = worksheet.col_values(1)
-            row_lookup = {name.strip(): row for row, name in enumerate(names[1:], start=2) if name.strip()}
+            row_lookup = {name: row for row, name in enumerate(names, start=2)}
             preview_rows = {
                 str(self.tree.item(row_id)["values"][0]).strip(): self.tree.item(row_id)["values"]
                 for row_id in self.tree.get_children()
@@ -4529,15 +4836,16 @@ class QuizAppGUI:
         """Pop-up after gradebook update with option to open it."""
         popup = tk.Toplevel(self.root)
         popup.title("Google Sheets Updated")
-        popup.geometry("350x100")
+        popup.geometry("430x190")
         popup.grab_set()  # make it modal
 
         ttk.Label(
             popup,
-            text="Google Sheets has been updated.\n"
+            text="Google Sheets was updated successfully.\n"
                 + str1 + "\n"
-                + str2 + "\n",
-            wraplength=320,
+                + str2 + "\n\n"
+                + "It is now safe to edit your Google Sheet on the cloud as needed.",
+            wraplength=400,
             justify="center"
         ).pack(pady=(20, 10))
 
