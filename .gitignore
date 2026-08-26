@@ -14,3 +14,6 @@ google_oauth_client.json
 google_token.json
 token.json
 credentials.json
+
+#local file for rosters
+rosters/
