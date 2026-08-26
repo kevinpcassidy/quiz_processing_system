@@ -8,9 +8,3 @@ venv/
 
 # Local app settings
 quiz_settings.json
-
-# Google OAuth application/user credentials
-google_oauth_client.json
-google_token.json
-token.json
-credentials.json
