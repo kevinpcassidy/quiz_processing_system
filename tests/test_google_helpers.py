@@ -30,6 +30,34 @@ write_roster_names = namespace["write_roster_names"]
 
 
 class GoogleHelperTests(unittest.TestCase):
+    def test_heavy_dependencies_are_not_imported_at_module_startup(self):
+        heavy_packages = {
+            "cv2", "google", "google_auth_oauthlib", "gspread", "numpy",
+            "openpyxl", "pandas", "pdf2image", "PIL", "pytesseract", "rapidfuzz",
+        }
+        imported = []
+        for node in module.body:
+            if isinstance(node, ast.Import):
+                imported.extend(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                imported.append(node.module or "")
+        eager_heavy_imports = [
+            name for name in imported if name.split(".", 1)[0] in heavy_packages
+        ]
+        self.assertEqual(eager_heavy_imports, [])
+
+    def test_dependency_groups_have_the_expected_preparation_order(self):
+        assignment = next(
+            node for node in module.body
+            if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "DEPENDENCY_ORDER"
+                    for target in node.targets)
+        )
+        self.assertEqual(
+            ast.literal_eval(assignment.value),
+            ("google", "excel", "pdf", "ocr"),
+        )
+
     def test_unique_gradebook_title_uses_year_and_suffix(self):
         base = "2026-2027 Quiz Processing System"
         self.assertEqual(unique_gradebook_title([], 2026), base)
