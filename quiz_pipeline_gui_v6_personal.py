@@ -276,7 +276,7 @@ class QuizAppGUI:
         self.score_threshold = tk.DoubleVar(value=3.2)
         self.enable_gradebook_var = tk.BooleanVar(value=False)
         self.google_sheets_enabled_var = tk.BooleanVar(value=False)
-        self.google_connection_status_var = tk.StringVar(value="Not connected")
+        self.google_connection_status_var = tk.StringVar(value="Google Sheets: Not Enabled")
         self.google_sheet_title_var = tk.StringVar(value="None created")
         self.google_roster_status_var = tk.StringVar(value="Rosters have not been updated yet.")
         self.show_google_extraction_warning_var = tk.BooleanVar(value=True)
@@ -468,6 +468,11 @@ class QuizAppGUI:
                 self.score_threshold.set(data.get("score_threshold", 3.2))
                 self.enable_gradebook_var.set(data.get("enable_gradebook_var", False))
                 self.google_sheets_enabled_var.set(data.get("google_sheets_enabled", False))
+                self.google_connection_status_var.set(
+                    "Google Sheets: Not Connected"
+                    if self.google_sheets_enabled_var.get()
+                    else "Google Sheets: Not Enabled"
+                )
                 self.show_google_extraction_warning_var.set(data.get("show_google_extraction_warning", True))
                 self.google_rosters_last_updated = data.get("google_rosters_last_updated", "")
                 self.google_roster_status_var.set(format_local_timestamp(self.google_rosters_last_updated))
@@ -482,6 +487,7 @@ class QuizAppGUI:
             self.score_threshold.set(3.2)
             self.enable_gradebook_var.set(False)
             self.google_sheets_enabled_var.set(False)
+            self.google_connection_status_var.set("Google Sheets: Not Enabled")
             self.show_google_extraction_warning_var.set(True)
 
     def save_settings(self):
@@ -617,6 +623,29 @@ class QuizAppGUI:
         # Preferences section
         ttk.Separator(self.left_frame, orient="horizontal").pack(fill="x", pady=(10,8))
         ttk.Label(self.left_frame, text="Preferences", style="Header.TLabel").pack(anchor="w", pady=(0,6))
+        ttk.Label(
+            self.left_frame,
+            textvariable=self.google_connection_status_var,
+            wraplength=300,
+        ).pack(anchor="w", pady=(0, 2))
+        ttk.Button(
+            self.left_frame,
+            text="Set-up Google Sheets",
+            command=self._setup_google_sheets_panel,
+        ).pack(fill="x", pady=4)
+        ttk.Label(
+            self.left_frame,
+            textvariable=self.google_roster_status_var,
+            wraplength=300,
+        ).pack(anchor="w", pady=(3, 2))
+        self.google_refresh_button = ttk.Button(
+            self.left_frame,
+            text="Refresh Rosters Now",
+            command=lambda: self._refresh_google_rosters(background=True, notify=True),
+        )
+        self.google_refresh_button.pack(fill="x", pady=4)
+        self.google_refresh_button.state(["disabled"])
+        ttk.Separator(self.left_frame, orient="horizontal").pack(fill="x", pady=(6, 4))
         ttk.Button(self.left_frame, text="Set-up Classes", command=self._setup_classes_panel).pack(fill="x", pady=4)
         ttk.Button(self.left_frame, text="Set-up Grading Scale", command=self._open_grading_scale_setup).pack(fill="x", pady=4)
         if self.enable_gradebook_var.get():
@@ -884,12 +913,6 @@ class QuizAppGUI:
             offvalue=False            
         ).pack(anchor="center", padx=10, pady=5)
 
-        ttk.Checkbutton(
-            content_frame,
-            text="Show Google Sheets safety confirmation before extraction",
-            variable=self.show_google_extraction_warning_var,
-        ).pack(anchor="center", padx=10, pady=5)
-        
         # Separator
         ttk.Separator(content_frame, orient="horizontal").pack(fill="x", pady=15)
         # ---------------------------
@@ -926,12 +949,27 @@ class QuizAppGUI:
             offvalue=False
         ).pack(pady=(0, 10))
 
-
         # Separator
         ttk.Separator(content_frame, orient="horizontal").pack(fill="x", pady=15)
 
         # ---------------------------
-        # Section 2: Detecting Multiple Scores
+        # Section 3: Warning Dialogue Boxes
+        # ---------------------------
+        ttk.Label(
+            content_frame,
+            text="Warning Dialogue Boxes",
+            font=("Segoe UI", 14, "bold"),
+        ).pack(pady=(10, 5))
+        ttk.Checkbutton(
+            content_frame,
+            text="Show Google Sheets safety confirmation before extraction",
+            variable=self.show_google_extraction_warning_var,
+        ).pack(anchor="center", padx=10, pady=(5, 10))
+
+        ttk.Separator(content_frame, orient="horizontal").pack(fill="x", pady=15)
+
+        # ---------------------------
+        # Section 4: Detecting Multiple Scores
         # ---------------------------
         ttk.Label(content_frame, text="Detecting Multiple Scores", font=("Segoe UI", 14, "bold")).pack(pady=(10, 5))
 
@@ -1050,9 +1088,23 @@ class QuizAppGUI:
             text="Export Current Rosters for Mail Merge",
             command=self._export_rosters_for_mail_merge,
         ).pack(fill="x", padx=18, pady=(0, 10))
-        ttk.Separator(home, orient="horizontal").pack(fill="x", pady=15)
-        self._build_google_controls(home)
         ttk.Frame(home, height=15).pack()
+
+    def _setup_google_sheets_panel(self):
+        """Show Google Sheets configuration without changing the right panel."""
+        for widget in self.center_frame.winfo_children():
+            widget.destroy()
+        scroll = AutoScrollableFrame(self.center_frame)
+        scroll.pack(fill="both", expand=True)
+        content = scroll.content
+        ttk.Label(
+            content,
+            text="Set-up Google Sheets",
+            font=("Segoe UI", 16, "bold"),
+        ).pack(pady=(24, 14))
+        self._build_google_controls(content)
+        ttk.Separator(content, orient="horizontal").pack(fill="x", padx=18, pady=15)
+        ttk.Button(content, text="Home", command=self._build_center_panel).pack(pady=(0, 18))
 
     def _build_google_controls(self, parent):
         ttk.Label(parent, text="Google Sheets Gradebook", style="Header.TLabel").pack(anchor="w", padx=18)
@@ -1094,11 +1146,12 @@ class QuizAppGUI:
             command=self._open_google_gradebook,
         )
         self.google_open_button.pack(fill="x", pady=2)
-        ttk.Button(
+        self.google_setup_refresh_button = ttk.Button(
             self.google_controls_frame,
             text="Refresh Rosters Now",
             command=lambda: self._refresh_google_rosters(background=True, notify=True),
-        ).pack(fill="x", pady=2)
+        )
+        self.google_setup_refresh_button.pack(fill="x", pady=2)
         ttk.Button(
             self.google_controls_frame,
             text="About Google Sheets",
@@ -4646,7 +4699,9 @@ class QuizAppGUI:
         threading.Thread(target=worker, daemon=True).start()
 
     def _finish_google_authorization(self, popup, status_var):
+        self.google_session_connected = True
         self.google_connection_status_var.set("Google Sheets: Connected")
+        self._update_google_controls_visibility()
         if hasattr(self, "google_authorize_button") and self.google_authorize_button.winfo_exists():
             self.google_authorize_button.configure(text="Reconnect / Change Google Account")
         if popup.winfo_exists():
@@ -4689,12 +4744,13 @@ class QuizAppGUI:
             except PermissionError:
                 self.root.after(0, self._show_google_reconnect_prompt)
             except Exception as error:
-                self.root.after(0, lambda error=error: self.google_connection_status_var.set(f"Google Sheets unavailable: {error}"))
+                self.root.after(0, lambda error=error: self._show_google_startup_failure(error))
         threading.Thread(target=worker, daemon=True).start()
 
     def _google_startup_success(self, title):
         self.google_session_connected = True
         self.google_connection_status_var.set("Google Sheets: Connected")
+        self._update_google_controls_visibility()
         if hasattr(self, "google_authorize_button") and self.google_authorize_button.winfo_exists():
             self.google_authorize_button.configure(text="Reconnect / Change Google Account")
         if title:
@@ -4702,8 +4758,15 @@ class QuizAppGUI:
             self.save_settings()
             self._refresh_google_rosters(background=True, notify=False)
 
+    def _show_google_startup_failure(self, error):
+        self.google_session_connected = False
+        self.google_connection_status_var.set(f"Google Sheets: Not Connected ({error})")
+        self._update_google_controls_visibility()
+
     def _show_google_reconnect_prompt(self):
+        self.google_session_connected = False
         self.google_connection_status_var.set("Google Sheets: Reconnection required")
+        self._update_google_controls_visibility()
         if messagebox.askyesno(
             "Reconnect Google Sheets",
             "Google Sheets was previously connected, but its authorization has expired or was revoked. "
@@ -4716,6 +4779,8 @@ class QuizAppGUI:
             self.google_sheets_enabled_var.set(False)
             self._show_google_opt_in_warning()
         else:
+            self.google_session_connected = False
+            self.google_connection_status_var.set("Google Sheets: Not Enabled")
             self.save_settings()
             self._update_google_controls_visibility()
 
@@ -4740,12 +4805,15 @@ class QuizAppGUI:
 
         def cancel():
             self.google_sheets_enabled_var.set(False)
+            self.google_session_connected = False
+            self.google_connection_status_var.set("Google Sheets: Not Enabled")
             self.save_settings()
             self._update_google_controls_visibility()
             popup.destroy()
 
         def proceed():
             self.google_sheets_enabled_var.set(True)
+            self.google_connection_status_var.set("Google Sheets: Not Connected")
             self.save_settings()
             self._update_google_controls_visibility()
             popup.destroy()
@@ -4755,18 +4823,37 @@ class QuizAppGUI:
         popup.protocol("WM_DELETE_WINDOW", cancel)
 
     def _update_google_controls_visibility(self):
-        if not hasattr(self, "google_controls_frame") or not self.google_controls_frame.winfo_exists():
-            return
-        if self.google_sheets_enabled_var.get():
-            self.google_controls_frame.pack(fill="x")
-        else:
-            self.google_controls_frame.pack_forget()
+        controls_exist = (
+            hasattr(self, "google_controls_frame")
+            and self.google_controls_frame.winfo_exists()
+        )
+        if controls_exist:
+            if self.google_sheets_enabled_var.get():
+                self.google_controls_frame.pack(fill="x", padx=18)
+            else:
+                self.google_controls_frame.pack_forget()
         if hasattr(self, "google_create_button"):
-            self.google_create_button.configure(
-                text="Create New Google Sheets Gradebook" if self.google_spreadsheet_id else "Create Google Sheets Gradebook"
-            )
+            if self.google_create_button.winfo_exists():
+                self.google_create_button.configure(
+                    text=(
+                        "Create New Google Sheets Gradebook"
+                        if self.google_spreadsheet_id
+                        else "Create Google Sheets Gradebook"
+                    )
+                )
         if hasattr(self, "google_open_button"):
-            self.google_open_button.state(["!disabled"] if self.google_spreadsheet_id else ["disabled"])
+            if self.google_open_button.winfo_exists():
+                self.google_open_button.state(["!disabled"] if self.google_spreadsheet_id else ["disabled"])
+
+        refresh_enabled = (
+            self.google_sheets_enabled_var.get()
+            and self.google_session_connected
+            and bool(self.google_spreadsheet_id)
+        )
+        for attribute in ("google_refresh_button", "google_setup_refresh_button"):
+            button = getattr(self, attribute, None)
+            if button is not None and button.winfo_exists():
+                button.state(["!disabled"] if refresh_enabled else ["disabled"])
 
     def _confirm_create_google_gradebook(self):
         if not self._run_when_dependency_ready(
