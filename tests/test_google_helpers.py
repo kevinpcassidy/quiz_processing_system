@@ -13,6 +13,7 @@ module = ast.parse(source)
 helper_names = {
     "atomic_write_json",
     "excel_sheet_title",
+    "format_google_progress_status",
     "format_local_timestamp",
     "read_roster_names",
     "unique_gradebook_title",
@@ -24,12 +25,27 @@ exec(compile(ast.Module(body=wanted, type_ignores=[]), "quiz_pipeline_gui_v6_per
 atomic_write_json = namespace["atomic_write_json"]
 excel_sheet_title = namespace["excel_sheet_title"]
 format_local_timestamp = namespace["format_local_timestamp"]
+format_google_progress_status = namespace["format_google_progress_status"]
 read_roster_names = namespace["read_roster_names"]
 unique_gradebook_title = namespace["unique_gradebook_title"]
 write_roster_names = namespace["write_roster_names"]
 
 
 class GoogleHelperTests(unittest.TestCase):
+    def test_google_progress_status_animates_and_reports_slow_connections(self):
+        self.assertEqual(
+            format_google_progress_status("preparing", 2, 1),
+            "Google Sheets: Preparing.",
+        )
+        self.assertEqual(
+            format_google_progress_status("connecting", 5, 3),
+            "Google Sheets: Connecting...",
+        )
+        self.assertEqual(
+            format_google_progress_status("connecting", 15, 2),
+            "Google Sheets: Still connecting..",
+        )
+
     def test_heavy_dependencies_are_not_imported_at_module_startup(self):
         heavy_packages = {
             "cv2", "google", "google_auth_oauthlib", "gspread", "numpy",

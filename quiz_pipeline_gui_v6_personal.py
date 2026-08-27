@@ -108,6 +108,17 @@ def format_local_timestamp(iso_timestamp):
     return f"Rosters last updated on {value.strftime('%B %d, %Y')} at {value.strftime('%I:%M:%S %p')}."
 
 
+def format_google_progress_status(stage, elapsed_seconds, dot_count):
+    """Return a concise animated status for Google startup work."""
+    if stage == "connecting" and elapsed_seconds >= 15:
+        label = "Still connecting"
+    elif stage == "connecting":
+        label = "Connecting"
+    else:
+        label = "Preparing"
+    return f"Google Sheets: {label}{'.' * dot_count}"
+
+
 class AutoScrollableFrame:
     """A vertical canvas/frame whose scrollbar appears only when required."""
 
@@ -285,6 +296,10 @@ class QuizAppGUI:
         self.google_roster_snapshot = None
         self.google_session_connected = False
         self.google_session_rosters_refreshed = False
+        self.google_status_animation_job = None
+        self.google_status_animation_stage = None
+        self.google_status_animation_started = 0
+        self.google_status_animation_dots = 0
 
         # Heavy optional dependencies are prepared only after the window is
         # built. A requested feature can move its group to the front of the
@@ -323,10 +338,41 @@ class QuizAppGUI:
         self._build_left_panel()
         self._build_center_panel()
         self._build_right_panel()
+        if self.google_sheets_enabled_var.get():
+            self._start_google_status_animation("preparing")
         self.root.after(100, self._start_dependency_loader)
  
   
     # ---------------- UTILITY ----------------
+    def _start_google_status_animation(self, stage):
+        """Animate the startup status until Google reaches a final state."""
+        self._stop_google_status_animation()
+        self.google_status_animation_stage = stage
+        self.google_status_animation_started = time.monotonic()
+        self.google_status_animation_dots = 0
+        self._animate_google_status()
+
+    def _animate_google_status(self):
+        if not self.google_status_animation_stage:
+            return
+        self.google_status_animation_dots = (self.google_status_animation_dots % 3) + 1
+        elapsed = time.monotonic() - self.google_status_animation_started
+        self.google_connection_status_var.set(format_google_progress_status(
+            self.google_status_animation_stage,
+            elapsed,
+            self.google_status_animation_dots,
+        ))
+        self.google_status_animation_job = self.root.after(500, self._animate_google_status)
+
+    def _stop_google_status_animation(self):
+        if self.google_status_animation_job is not None:
+            try:
+                self.root.after_cancel(self.google_status_animation_job)
+            except tk.TclError:
+                pass
+        self.google_status_animation_job = None
+        self.google_status_animation_stage = None
+
     def _start_dependency_loader(self):
         """Prepare optional dependency groups without delaying the first paint."""
         if getattr(self, "dependency_thread", None) and self.dependency_thread.is_alive():
@@ -400,6 +446,9 @@ class QuizAppGUI:
         self.dependency_callbacks[group] = []
         if state == "failed":
             error = self.dependency_errors[group]
+            if group == "google":
+                self._stop_google_status_animation()
+                self.google_connection_status_var.set("Google Sheets: Not Connected")
             messagebox.showerror(
                 f"{DEPENDENCY_LABELS[group]} unavailable",
                 f"The required {DEPENDENCY_LABELS[group].lower()} could not be prepared:\n\n{error}\n\n"
@@ -447,6 +496,7 @@ class QuizAppGUI:
         return False
 
     def _on_close(self):
+        self._stop_google_status_animation()
         #Delete temp copies of gradebook
         self._cleanup_temp_gradebook_copies()
         
@@ -469,7 +519,7 @@ class QuizAppGUI:
                 self.enable_gradebook_var.set(data.get("enable_gradebook_var", False))
                 self.google_sheets_enabled_var.set(data.get("google_sheets_enabled", False))
                 self.google_connection_status_var.set(
-                    "Google Sheets: Not Connected"
+                    "Google Sheets: Preparing…"
                     if self.google_sheets_enabled_var.get()
                     else "Google Sheets: Not Enabled"
                 )
@@ -4699,6 +4749,7 @@ class QuizAppGUI:
         threading.Thread(target=worker, daemon=True).start()
 
     def _finish_google_authorization(self, popup, status_var):
+        self._stop_google_status_animation()
         self.google_session_connected = True
         self.google_connection_status_var.set("Google Sheets: Connected")
         self._update_google_controls_visibility()
@@ -4732,7 +4783,9 @@ class QuizAppGUI:
 
     def _start_google_startup_check(self):
         if not self.google_sheets_enabled_var.get():
+            self._stop_google_status_animation()
             return
+        self._start_google_status_animation("connecting")
 
         def worker():
             try:
@@ -4748,6 +4801,7 @@ class QuizAppGUI:
         threading.Thread(target=worker, daemon=True).start()
 
     def _google_startup_success(self, title):
+        self._stop_google_status_animation()
         self.google_session_connected = True
         self.google_connection_status_var.set("Google Sheets: Connected")
         self._update_google_controls_visibility()
@@ -4759,11 +4813,13 @@ class QuizAppGUI:
             self._refresh_google_rosters(background=True, notify=False)
 
     def _show_google_startup_failure(self, error):
+        self._stop_google_status_animation()
         self.google_session_connected = False
         self.google_connection_status_var.set(f"Google Sheets: Not Connected ({error})")
         self._update_google_controls_visibility()
 
     def _show_google_reconnect_prompt(self):
+        self._stop_google_status_animation()
         self.google_session_connected = False
         self.google_connection_status_var.set("Google Sheets: Reconnection required")
         self._update_google_controls_visibility()
@@ -4779,6 +4835,7 @@ class QuizAppGUI:
             self.google_sheets_enabled_var.set(False)
             self._show_google_opt_in_warning()
         else:
+            self._stop_google_status_animation()
             self.google_session_connected = False
             self.google_connection_status_var.set("Google Sheets: Not Enabled")
             self.save_settings()
@@ -4804,6 +4861,7 @@ class QuizAppGUI:
         buttons.pack(pady=12)
 
         def cancel():
+            self._stop_google_status_animation()
             self.google_sheets_enabled_var.set(False)
             self.google_session_connected = False
             self.google_connection_status_var.set("Google Sheets: Not Enabled")
@@ -4812,6 +4870,7 @@ class QuizAppGUI:
             popup.destroy()
 
         def proceed():
+            self._stop_google_status_animation()
             self.google_sheets_enabled_var.set(True)
             self.google_connection_status_var.set("Google Sheets: Not Connected")
             self.save_settings()
