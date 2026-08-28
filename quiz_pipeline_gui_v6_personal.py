@@ -5,20 +5,9 @@ import json
 import os
 import shutil, tempfile
 from tkinter import font as tkfont
-from pdf2image import convert_from_path, pdfinfo_from_path
-from PIL import Image, ImageEnhance, ImageTk
-import pytesseract
-from rapidfuzz import process
-import pandas as pd
+import importlib
 import re
 import csv
-import cv2
-import numpy as np
-import gspread
-from google.auth.transport.requests import Request
-from google.auth.exceptions import RefreshError
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
 import io
 import time
 import webbrowser
@@ -34,6 +23,22 @@ APP_DIR_NAME = "quiz_processing_system"
 SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 OAUTH_CLIENT_FILE = "google_oauth_client.json"
 TOKEN_FILE = "google_token.json"
+
+# These globals are populated by the staged dependency worker after Tk has
+# displayed the main window. Keeping the names stable avoids spreading import
+# plumbing throughout the existing processing code.
+gspread = Request = RefreshError = Credentials = InstalledAppFlow = None
+pd = convert_from_path = pdfinfo_from_path = None
+Image = ImageEnhance = ImageTk = cv2 = np = None
+pytesseract = process = None
+
+DEPENDENCY_ORDER = ("google", "excel", "pdf", "ocr")
+DEPENDENCY_LABELS = {
+    "google": "Google Sheets tools",
+    "excel": "Excel export tools",
+    "pdf": "PDF and calibration tools",
+    "ocr": "OCR and name-matching tools",
+}
 
 
 def atomic_write_json(path, data):
@@ -101,6 +106,17 @@ def format_local_timestamp(iso_timestamp):
         return "Rosters have not been updated yet."
     value = datetime.fromisoformat(iso_timestamp).astimezone()
     return f"Rosters last updated on {value.strftime('%B %d, %Y')} at {value.strftime('%I:%M:%S %p')}."
+
+
+def format_google_progress_status(stage, elapsed_seconds, dot_count):
+    """Return a concise animated status for Google startup work."""
+    if stage == "connecting" and elapsed_seconds >= 15:
+        label = "Still connecting"
+    elif stage == "connecting":
+        label = "Connecting"
+    else:
+        label = "Preparing"
+    return f"Google Sheets: {label}{'.' * dot_count}"
 
 
 class AutoScrollableFrame:
@@ -271,13 +287,29 @@ class QuizAppGUI:
         self.score_threshold = tk.DoubleVar(value=3.2)
         self.enable_gradebook_var = tk.BooleanVar(value=False)
         self.google_sheets_enabled_var = tk.BooleanVar(value=False)
-        self.google_connection_status_var = tk.StringVar(value="Not connected")
+        self.google_connection_status_var = tk.StringVar(value="Google Sheets: Not Enabled")
         self.google_sheet_title_var = tk.StringVar(value="None created")
         self.google_roster_status_var = tk.StringVar(value="Rosters have not been updated yet.")
         self.show_google_extraction_warning_var = tk.BooleanVar(value=True)
         self.google_spreadsheet_id = ""
         self.google_rosters_last_updated = ""
         self.google_roster_snapshot = None
+        self.google_session_connected = False
+        self.google_session_rosters_refreshed = False
+        self.google_status_animation_job = None
+        self.google_status_animation_stage = None
+        self.google_status_animation_started = 0
+        self.google_status_animation_dots = 0
+
+        # Heavy optional dependencies are prepared only after the window is
+        # built. A requested feature can move its group to the front of the
+        # remaining queue and will resume automatically when loading finishes.
+        self.dependency_states = {name: "not_started" for name in DEPENDENCY_ORDER}
+        self.dependency_errors = {}
+        self.dependency_callbacks = {name: [] for name in DEPENDENCY_ORDER}
+        self.dependency_wait_dialogs = {name: [] for name in DEPENDENCY_ORDER}
+        self.dependency_priority = []
+        self.dependency_lock = threading.Lock()
         
         # Load user preferences
         self.load_settings()
@@ -306,11 +338,165 @@ class QuizAppGUI:
         self._build_left_panel()
         self._build_center_panel()
         self._build_right_panel()
-        self.root.after(250, self._start_google_startup_check)
+        if self.google_sheets_enabled_var.get():
+            self._start_google_status_animation("preparing")
+        self.root.after(100, self._start_dependency_loader)
  
   
     # ---------------- UTILITY ----------------
+    def _start_google_status_animation(self, stage):
+        """Animate the startup status until Google reaches a final state."""
+        self._stop_google_status_animation()
+        self.google_status_animation_stage = stage
+        self.google_status_animation_started = time.monotonic()
+        self.google_status_animation_dots = 0
+        self._animate_google_status()
+
+    def _animate_google_status(self):
+        if not self.google_status_animation_stage:
+            return
+        self.google_status_animation_dots = (self.google_status_animation_dots % 3) + 1
+        elapsed = time.monotonic() - self.google_status_animation_started
+        self.google_connection_status_var.set(format_google_progress_status(
+            self.google_status_animation_stage,
+            elapsed,
+            self.google_status_animation_dots,
+        ))
+        self.google_status_animation_job = self.root.after(500, self._animate_google_status)
+
+    def _stop_google_status_animation(self):
+        if self.google_status_animation_job is not None:
+            try:
+                self.root.after_cancel(self.google_status_animation_job)
+            except tk.TclError:
+                pass
+        self.google_status_animation_job = None
+        self.google_status_animation_stage = None
+
+    def _start_dependency_loader(self):
+        """Prepare optional dependency groups without delaying the first paint."""
+        if getattr(self, "dependency_thread", None) and self.dependency_thread.is_alive():
+            return
+        self.dependency_thread = threading.Thread(target=self._dependency_worker, daemon=True)
+        self.dependency_thread.start()
+
+    def _dependency_worker(self):
+        while True:
+            with self.dependency_lock:
+                remaining = [name for name in DEPENDENCY_ORDER
+                             if self.dependency_states[name] == "not_started"]
+                if not remaining:
+                    return
+                priority = next((name for name in self.dependency_priority if name in remaining), None)
+                group = priority or remaining[0]
+                if group in self.dependency_priority:
+                    self.dependency_priority.remove(group)
+                self.dependency_states[group] = "loading"
+            try:
+                self._load_dependency_group(group)
+            except Exception as error:
+                with self.dependency_lock:
+                    self.dependency_states[group] = "failed"
+                    self.dependency_errors[group] = error
+            else:
+                with self.dependency_lock:
+                    self.dependency_states[group] = "ready"
+            self.root.after(0, lambda name=group: self._finish_dependency_group(name))
+
+    @staticmethod
+    def _load_dependency_group(group):
+        global gspread, Request, RefreshError, Credentials, InstalledAppFlow
+        global pd, convert_from_path, pdfinfo_from_path
+        global Image, ImageEnhance, ImageTk, cv2, np, pytesseract, process
+        if group == "google":
+            gspread = importlib.import_module("gspread")
+            Request = importlib.import_module("google.auth.transport.requests").Request
+            RefreshError = importlib.import_module("google.auth.exceptions").RefreshError
+            Credentials = importlib.import_module("google.oauth2.credentials").Credentials
+            InstalledAppFlow = importlib.import_module("google_auth_oauthlib.flow").InstalledAppFlow
+        elif group == "excel":
+            pd = importlib.import_module("pandas")
+            importlib.import_module("openpyxl")
+        elif group == "pdf":
+            pdf2image = importlib.import_module("pdf2image")
+            convert_from_path = pdf2image.convert_from_path
+            pdfinfo_from_path = pdf2image.pdfinfo_from_path
+            pil_image = importlib.import_module("PIL.Image")
+            Image, ImageEnhance, ImageTk = (
+                pil_image,
+                importlib.import_module("PIL.ImageEnhance"),
+                importlib.import_module("PIL.ImageTk"),
+            )
+            np = importlib.import_module("numpy")
+            cv2 = importlib.import_module("cv2")
+        elif group == "ocr":
+            pytesseract = importlib.import_module("pytesseract")
+            process = importlib.import_module("rapidfuzz.process")
+
+    def _finish_dependency_group(self, group):
+        dialogs = self.dependency_wait_dialogs[group]
+        self.dependency_wait_dialogs[group] = []
+        for dialog in dialogs:
+            if dialog.winfo_exists():
+                dialog.grab_release()
+                dialog.destroy()
+
+        state = self.dependency_states[group]
+        callbacks = self.dependency_callbacks[group]
+        self.dependency_callbacks[group] = []
+        if state == "failed":
+            error = self.dependency_errors[group]
+            if group == "google":
+                self._stop_google_status_animation()
+                self.google_connection_status_var.set("Google Sheets: Not Connected")
+            messagebox.showerror(
+                f"{DEPENDENCY_LABELS[group]} unavailable",
+                f"The required {DEPENDENCY_LABELS[group].lower()} could not be prepared:\n\n{error}\n\n"
+                "Close and reopen the application to try to resolve this error.",
+            )
+            return
+        if group == "google":
+            self._start_google_startup_check()
+        for callback in callbacks:
+            self.root.after_idle(callback)
+
+    def _run_when_dependency_ready(self, group, callback, message):
+        """Run now when ready, otherwise show a modal and resume exactly once."""
+        with self.dependency_lock:
+            state = self.dependency_states[group]
+            if state == "ready":
+                return True
+            if state == "failed":
+                error = self.dependency_errors[group]
+            else:
+                error = None
+                self.dependency_callbacks[group].append(callback)
+                if state == "not_started" and group not in self.dependency_priority:
+                    self.dependency_priority.insert(0, group)
+        if error is not None:
+            messagebox.showerror(
+                f"{DEPENDENCY_LABELS[group]} unavailable",
+                f"This feature is unavailable because its dependencies failed to load:\n\n{error}\n\n"
+                "Close and reopen the application to try to resolve this error.",
+            )
+            return False
+
+        popup = tk.Toplevel(self.root)
+        popup.title("Preparing Feature")
+        popup.transient(self.root)
+        popup.grab_set()
+        popup.resizable(False, False)
+        popup.protocol("WM_DELETE_WINDOW", lambda: None)
+        ttk.Label(popup, text=message, padding=24).pack()
+        progress = ttk.Progressbar(popup, mode="indeterminate", length=280)
+        progress.pack(padx=24, pady=(0, 24))
+        progress.start(12)
+        self.dependency_wait_dialogs[group].append(popup)
+        self._start_dependency_loader()
+        return False
+
     def _on_close(self):
+        self._stop_google_status_animation()
         #Delete temp copies of gradebook
         self._cleanup_temp_gradebook_copies()
         
@@ -332,6 +518,11 @@ class QuizAppGUI:
                 self.score_threshold.set(data.get("score_threshold", 3.2))
                 self.enable_gradebook_var.set(data.get("enable_gradebook_var", False))
                 self.google_sheets_enabled_var.set(data.get("google_sheets_enabled", False))
+                self.google_connection_status_var.set(
+                    "Google Sheets: Preparing…"
+                    if self.google_sheets_enabled_var.get()
+                    else "Google Sheets: Not Enabled"
+                )
                 self.show_google_extraction_warning_var.set(data.get("show_google_extraction_warning", True))
                 self.google_rosters_last_updated = data.get("google_rosters_last_updated", "")
                 self.google_roster_status_var.set(format_local_timestamp(self.google_rosters_last_updated))
@@ -346,6 +537,7 @@ class QuizAppGUI:
             self.score_threshold.set(3.2)
             self.enable_gradebook_var.set(False)
             self.google_sheets_enabled_var.set(False)
+            self.google_connection_status_var.set("Google Sheets: Not Enabled")
             self.show_google_extraction_warning_var.set(True)
 
     def save_settings(self):
@@ -481,6 +673,29 @@ class QuizAppGUI:
         # Preferences section
         ttk.Separator(self.left_frame, orient="horizontal").pack(fill="x", pady=(10,8))
         ttk.Label(self.left_frame, text="Preferences", style="Header.TLabel").pack(anchor="w", pady=(0,6))
+        ttk.Label(
+            self.left_frame,
+            textvariable=self.google_connection_status_var,
+            wraplength=300,
+        ).pack(anchor="w", pady=(0, 2))
+        ttk.Button(
+            self.left_frame,
+            text="Set-up Google Sheets",
+            command=self._setup_google_sheets_panel,
+        ).pack(fill="x", pady=4)
+        ttk.Label(
+            self.left_frame,
+            textvariable=self.google_roster_status_var,
+            wraplength=300,
+        ).pack(anchor="w", pady=(3, 2))
+        self.google_refresh_button = ttk.Button(
+            self.left_frame,
+            text="Refresh Rosters Now",
+            command=lambda: self._refresh_google_rosters(background=True, notify=True),
+        )
+        self.google_refresh_button.pack(fill="x", pady=4)
+        self.google_refresh_button.state(["disabled"])
+        ttk.Separator(self.left_frame, orient="horizontal").pack(fill="x", pady=(6, 4))
         ttk.Button(self.left_frame, text="Set-up Classes", command=self._setup_classes_panel).pack(fill="x", pady=4)
         ttk.Button(self.left_frame, text="Set-up Grading Scale", command=self._open_grading_scale_setup).pack(fill="x", pady=4)
         if self.enable_gradebook_var.get():
@@ -677,6 +892,10 @@ class QuizAppGUI:
 
     #Setup Advanced Pop-up
     def setup_advanced_pop_up(self):
+        if not self._run_when_dependency_ready(
+            "pdf", self.setup_advanced_pop_up, "Preparing PDF and calibration tools…"
+        ):
+            return
         # --- Create pop-up window ---
         advanced_window = tk.Toplevel(self.root)
         advanced_window.title("Advanced Settings")
@@ -744,12 +963,6 @@ class QuizAppGUI:
             offvalue=False            
         ).pack(anchor="center", padx=10, pady=5)
 
-        ttk.Checkbutton(
-            content_frame,
-            text="Show Google Sheets safety confirmation before extraction",
-            variable=self.show_google_extraction_warning_var,
-        ).pack(anchor="center", padx=10, pady=5)
-        
         # Separator
         ttk.Separator(content_frame, orient="horizontal").pack(fill="x", pady=15)
         # ---------------------------
@@ -786,12 +999,27 @@ class QuizAppGUI:
             offvalue=False
         ).pack(pady=(0, 10))
 
-
         # Separator
         ttk.Separator(content_frame, orient="horizontal").pack(fill="x", pady=15)
 
         # ---------------------------
-        # Section 2: Detecting Multiple Scores
+        # Section 3: Warning Dialogue Boxes
+        # ---------------------------
+        ttk.Label(
+            content_frame,
+            text="Warning Dialogue Boxes",
+            font=("Segoe UI", 14, "bold"),
+        ).pack(pady=(10, 5))
+        ttk.Checkbutton(
+            content_frame,
+            text="Show Google Sheets safety confirmation before extraction",
+            variable=self.show_google_extraction_warning_var,
+        ).pack(anchor="center", padx=10, pady=(5, 10))
+
+        ttk.Separator(content_frame, orient="horizontal").pack(fill="x", pady=15)
+
+        # ---------------------------
+        # Section 4: Detecting Multiple Scores
         # ---------------------------
         ttk.Label(content_frame, text="Detecting Multiple Scores", font=("Segoe UI", 14, "bold")).pack(pady=(10, 5))
 
@@ -910,9 +1138,23 @@ class QuizAppGUI:
             text="Export Current Rosters for Mail Merge",
             command=self._export_rosters_for_mail_merge,
         ).pack(fill="x", padx=18, pady=(0, 10))
-        ttk.Separator(home, orient="horizontal").pack(fill="x", pady=15)
-        self._build_google_controls(home)
         ttk.Frame(home, height=15).pack()
+
+    def _setup_google_sheets_panel(self):
+        """Show Google Sheets configuration without changing the right panel."""
+        for widget in self.center_frame.winfo_children():
+            widget.destroy()
+        scroll = AutoScrollableFrame(self.center_frame)
+        scroll.pack(fill="both", expand=True)
+        content = scroll.content
+        ttk.Label(
+            content,
+            text="Set-up Google Sheets",
+            font=("Segoe UI", 16, "bold"),
+        ).pack(pady=(24, 14))
+        self._build_google_controls(content)
+        ttk.Separator(content, orient="horizontal").pack(fill="x", padx=18, pady=15)
+        ttk.Button(content, text="Home", command=self._build_center_panel).pack(pady=(0, 18))
 
     def _build_google_controls(self, parent):
         ttk.Label(parent, text="Google Sheets Gradebook", style="Header.TLabel").pack(anchor="w", padx=18)
@@ -954,11 +1196,12 @@ class QuizAppGUI:
             command=self._open_google_gradebook,
         )
         self.google_open_button.pack(fill="x", pady=2)
-        ttk.Button(
+        self.google_setup_refresh_button = ttk.Button(
             self.google_controls_frame,
             text="Refresh Rosters Now",
             command=lambda: self._refresh_google_rosters(background=True, notify=True),
-        ).pack(fill="x", pady=2)
+        )
+        self.google_setup_refresh_button.pack(fill="x", pady=2)
         ttk.Button(
             self.google_controls_frame,
             text="About Google Sheets",
@@ -967,8 +1210,14 @@ class QuizAppGUI:
         self._update_google_controls_visibility()
 
     def _export_rosters_for_mail_merge(self):
+        if not self._run_when_dependency_ready(
+            "excel", self._export_rosters_for_mail_merge, "Preparing Excel export…"
+        ):
+            return
         if not self.classes:
             messagebox.showinfo("No Classes", "There are no class rosters to export.")
+            return
+        if not self._confirm_cached_roster_export():
             return
         output_path = filedialog.asksaveasfilename(
             title="Export Current Rosters for Mail Merge",
@@ -1001,6 +1250,53 @@ class QuizAppGUI:
                 messagebox.showinfo("Rosters Exported", summary)
         except Exception as error:
             messagebox.showerror("Roster Export Error", f"Could not export the workbook:\n{error}")
+
+    def _confirm_cached_roster_export(self):
+        """Warn when this session could not verify Google-backed roster caches."""
+        has_google_rosters = any(
+            isinstance(info, dict) and info.get("source") == "google_sheet"
+            for info in self.classes.values()
+        )
+        if (not self.google_sheets_enabled_var.get()
+                or not has_google_rosters
+                or (self.google_session_connected and self.google_session_rosters_refreshed)):
+            return True
+        timestamp = format_local_timestamp(self.google_rosters_last_updated)
+        if not self.google_rosters_last_updated:
+            timestamp = "The date of the last successful roster sync is unknown."
+        detail = (
+            "Google Sheets has not connected and refreshed the rosters during this session. "
+            "The downloaded file will be based on the last locally cached roster.\n\n"
+            f"{timestamp}\n\n"
+            "Check your internet connection or re-authorize your Google account if necessary."
+        )
+        result = {"proceed": False}
+        popup = tk.Toplevel(self.root)
+        popup.title("Google Sheets Rosters Not Refreshed")
+        popup.transient(self.root)
+        popup.grab_set()
+        popup.resizable(False, False)
+        ttk.Label(
+            popup,
+            text=detail,
+            wraplength=540,
+            justify="left",
+            padding=(24, 24, 24, 12),
+        ).pack()
+        buttons = ttk.Frame(popup, padding=(24, 8, 24, 24))
+        buttons.pack(fill="x")
+
+        def proceed():
+            result["proceed"] = True
+            popup.destroy()
+
+        ttk.Button(buttons, text="Cancel", command=popup.destroy).pack(side="right", padx=(8, 0))
+        ttk.Button(
+            buttons, text="Proceed with Cached Roster", command=proceed
+        ).pack(side="right")
+        popup.protocol("WM_DELETE_WINDOW", popup.destroy)
+        self.root.wait_window(popup)
+        return result["proceed"]
 
 
     #Handle classes saving, loading, deleting, etc.
@@ -1903,6 +2199,10 @@ class QuizAppGUI:
         return result["continue"]
 
     def _on_run_calibration(self):
+        if not self._run_when_dependency_ready(
+            "pdf", self._on_run_calibration, "Preparing PDF and calibration tools…"
+        ):
+            return
         if self._selected_class_is_google():
             if self.show_google_extraction_warning_var.get() and not self._confirm_google_extraction_safety():
                 return
@@ -2449,6 +2749,10 @@ class QuizAppGUI:
         Calls _show_extraction_progress() to update UI during processing.
         Manual review functions are placeholders for later implementation.
         """
+        if not self._run_when_dependency_ready(
+            "ocr", self.run_data_extraction, "Preparing OCR and name-matching tools…"
+        ):
+            return
         self.stop_processing = False
 
         # Pre-flight: get selected class and roster
@@ -4445,7 +4749,10 @@ class QuizAppGUI:
         threading.Thread(target=worker, daemon=True).start()
 
     def _finish_google_authorization(self, popup, status_var):
+        self._stop_google_status_animation()
+        self.google_session_connected = True
         self.google_connection_status_var.set("Google Sheets: Connected")
+        self._update_google_controls_visibility()
         if hasattr(self, "google_authorize_button") and self.google_authorize_button.winfo_exists():
             self.google_authorize_button.configure(text="Reconnect / Change Google Account")
         if popup.winfo_exists():
@@ -4457,6 +4764,10 @@ class QuizAppGUI:
             status_var.set(f"Authorization failed: {error}")
 
     def _reauthorize_google(self):
+        if not self._run_when_dependency_ready(
+            "google", self._reauthorize_google, "Preparing Google Sheets tools…"
+        ):
+            return
         if os.path.exists(self.token_file):
             if not messagebox.askyesno(
                 "Reconnect Google Sheets",
@@ -4472,7 +4783,9 @@ class QuizAppGUI:
 
     def _start_google_startup_check(self):
         if not self.google_sheets_enabled_var.get():
+            self._stop_google_status_animation()
             return
+        self._start_google_status_animation("connecting")
 
         def worker():
             try:
@@ -4484,11 +4797,14 @@ class QuizAppGUI:
             except PermissionError:
                 self.root.after(0, self._show_google_reconnect_prompt)
             except Exception as error:
-                self.root.after(0, lambda error=error: self.google_connection_status_var.set(f"Google Sheets unavailable: {error}"))
+                self.root.after(0, lambda error=error: self._show_google_startup_failure(error))
         threading.Thread(target=worker, daemon=True).start()
 
     def _google_startup_success(self, title):
+        self._stop_google_status_animation()
+        self.google_session_connected = True
         self.google_connection_status_var.set("Google Sheets: Connected")
+        self._update_google_controls_visibility()
         if hasattr(self, "google_authorize_button") and self.google_authorize_button.winfo_exists():
             self.google_authorize_button.configure(text="Reconnect / Change Google Account")
         if title:
@@ -4496,8 +4812,17 @@ class QuizAppGUI:
             self.save_settings()
             self._refresh_google_rosters(background=True, notify=False)
 
+    def _show_google_startup_failure(self, error):
+        self._stop_google_status_animation()
+        self.google_session_connected = False
+        self.google_connection_status_var.set(f"Google Sheets: Not Connected ({error})")
+        self._update_google_controls_visibility()
+
     def _show_google_reconnect_prompt(self):
+        self._stop_google_status_animation()
+        self.google_session_connected = False
         self.google_connection_status_var.set("Google Sheets: Reconnection required")
+        self._update_google_controls_visibility()
         if messagebox.askyesno(
             "Reconnect Google Sheets",
             "Google Sheets was previously connected, but its authorization has expired or was revoked. "
@@ -4510,6 +4835,9 @@ class QuizAppGUI:
             self.google_sheets_enabled_var.set(False)
             self._show_google_opt_in_warning()
         else:
+            self._stop_google_status_animation()
+            self.google_session_connected = False
+            self.google_connection_status_var.set("Google Sheets: Not Enabled")
             self.save_settings()
             self._update_google_controls_visibility()
 
@@ -4533,13 +4861,18 @@ class QuizAppGUI:
         buttons.pack(pady=12)
 
         def cancel():
+            self._stop_google_status_animation()
             self.google_sheets_enabled_var.set(False)
+            self.google_session_connected = False
+            self.google_connection_status_var.set("Google Sheets: Not Enabled")
             self.save_settings()
             self._update_google_controls_visibility()
             popup.destroy()
 
         def proceed():
+            self._stop_google_status_animation()
             self.google_sheets_enabled_var.set(True)
+            self.google_connection_status_var.set("Google Sheets: Not Connected")
             self.save_settings()
             self._update_google_controls_visibility()
             popup.destroy()
@@ -4549,20 +4882,43 @@ class QuizAppGUI:
         popup.protocol("WM_DELETE_WINDOW", cancel)
 
     def _update_google_controls_visibility(self):
-        if not hasattr(self, "google_controls_frame") or not self.google_controls_frame.winfo_exists():
-            return
-        if self.google_sheets_enabled_var.get():
-            self.google_controls_frame.pack(fill="x")
-        else:
-            self.google_controls_frame.pack_forget()
+        controls_exist = (
+            hasattr(self, "google_controls_frame")
+            and self.google_controls_frame.winfo_exists()
+        )
+        if controls_exist:
+            if self.google_sheets_enabled_var.get():
+                self.google_controls_frame.pack(fill="x", padx=18)
+            else:
+                self.google_controls_frame.pack_forget()
         if hasattr(self, "google_create_button"):
-            self.google_create_button.configure(
-                text="Create New Google Sheets Gradebook" if self.google_spreadsheet_id else "Create Google Sheets Gradebook"
-            )
+            if self.google_create_button.winfo_exists():
+                self.google_create_button.configure(
+                    text=(
+                        "Create New Google Sheets Gradebook"
+                        if self.google_spreadsheet_id
+                        else "Create Google Sheets Gradebook"
+                    )
+                )
         if hasattr(self, "google_open_button"):
-            self.google_open_button.state(["!disabled"] if self.google_spreadsheet_id else ["disabled"])
+            if self.google_open_button.winfo_exists():
+                self.google_open_button.state(["!disabled"] if self.google_spreadsheet_id else ["disabled"])
+
+        refresh_enabled = (
+            self.google_sheets_enabled_var.get()
+            and self.google_session_connected
+            and bool(self.google_spreadsheet_id)
+        )
+        for attribute in ("google_refresh_button", "google_setup_refresh_button"):
+            button = getattr(self, attribute, None)
+            if button is not None and button.winfo_exists():
+                button.state(["!disabled"] if refresh_enabled else ["disabled"])
 
     def _confirm_create_google_gradebook(self):
+        if not self._run_when_dependency_ready(
+            "google", self._confirm_create_google_gradebook, "Preparing Google Sheets tools…"
+        ):
+            return
         if self.google_spreadsheet_id:
             confirmed = messagebox.askyesno(
                 "Create a New Google Sheets Gradebook?",
@@ -4606,6 +4962,9 @@ class QuizAppGUI:
 
     def _pack_google_help_image(self, parent, maximum):
         path = os.path.join(self.project_root, "reference", "google_sheet_roster_example.png")
+        if self.dependency_states.get("pdf") != "ready":
+            ttk.Label(parent, text="[Roster example image is still being prepared]").pack(pady=5)
+            return
         try:
             image = Image.open(path)
             image.thumbnail((maximum, maximum))
@@ -4669,6 +5028,12 @@ class QuizAppGUI:
             return False
 
     def _refresh_google_rosters(self, background=True, notify=False):
+        if not self._run_when_dependency_ready(
+            "google",
+            lambda: self._refresh_google_rosters(background=background, notify=notify),
+            "Preparing Google Sheets tools…",
+        ):
+            return
         records = [
             (name, info) for name, info in self.classes.items()
             if isinstance(info, dict)
@@ -4694,8 +5059,13 @@ class QuizAppGUI:
 
     def _finish_roster_refresh(self, succeeded, total, notify):
         if total == 0:
+            self.google_session_rosters_refreshed = not any(
+                isinstance(info, dict) and info.get("source") == "google_sheet"
+                for info in self.classes.values()
+            )
             self.google_roster_status_var.set("No Google Sheets rosters are currently mapped.")
         elif succeeded == total:
+            self.google_session_rosters_refreshed = True
             self.google_rosters_last_updated = datetime.now().astimezone().isoformat()
             self.google_roster_status_var.set(format_local_timestamp(self.google_rosters_last_updated))
             self.save_settings()
