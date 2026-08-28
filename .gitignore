@@ -27,4 +27,4 @@ vendor/
 
 keep vendor read me and documentation
 !vendor/tesseract/doc/*
-!vendor/poppler/doc/*
+!vendor/poppler/docs/*
