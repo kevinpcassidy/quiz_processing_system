@@ -19,8 +19,8 @@ google_token.json
 token.json
 credentials.json
 
-#local file for rosters
-rosters/
+#release zip files
+*.zip
 
 do not upload all vendor files from poppler and tesseract
 vendor/
