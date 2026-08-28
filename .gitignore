@@ -21,3 +21,6 @@ credentials.json
 
 #local file for rosters
 rosters/
+
+do not upload all vendor files from poppler and tesseract
+vendor/
