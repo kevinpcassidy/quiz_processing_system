@@ -107,6 +107,30 @@ def write_roster_names(path, names):
     os.replace(temporary_path, path)
 
 
+def normalize_score_value(value):
+    """Return numeric score text as a number, collapsing whole floats to ints."""
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return int(value) if isinstance(value, float) and value.is_integer() else value
+
+    text = str(value).strip()
+    if not re.fullmatch(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)", text):
+        return text
+    number = float(text)
+    return int(number) if number.is_integer() else number
+
+
+def normalize_score_row(row):
+    """Normalize score columns while preserving the name in the first column."""
+    values = list(row)
+    if not values:
+        return values
+    return [values[0], *(normalize_score_value(value) for value in values[1:])]
+
+
 def format_local_timestamp(iso_timestamp):
     if not iso_timestamp:
         return "Rosters have not been updated yet."
@@ -3690,7 +3714,7 @@ class QuizAppGUI:
                     writer.writerow(columns)
                     for row_id in self.tree.get_children():
                         row_values = self.tree.item(row_id)["values"]
-                        writer.writerow(row_values)
+                        writer.writerow(normalize_score_row(row_values))
                 messagebox.showinfo("Exported", f"CSV exported to:\n{file_path}")
                 self.mark_step_done("download")
 
@@ -3704,7 +3728,10 @@ class QuizAppGUI:
             )
             if file_path:
                 columns = ["Name"] + [v.get().strip() for v in self.topic_vars if v.get().strip()]
-                rows = [self.tree.item(row_id)["values"] for row_id in self.tree.get_children()]
+                rows = [
+                    normalize_score_row(self.tree.item(row_id)["values"])
+                    for row_id in self.tree.get_children()
+                ]
                 try:
                     pd.DataFrame(rows, columns=columns).to_excel(file_path, index=False)
                     messagebox.showinfo("Exported", f"Excel file exported to:\n{file_path}")
@@ -3992,7 +4019,10 @@ class QuizAppGUI:
 
         # Build current run’s data from the Treeview
         columns = ["Name"] + [v.get().strip() for v in self.topic_vars if v.get().strip()]
-        new_data = [self.tree.item(row_id)["values"] for row_id in self.tree.get_children()]
+        new_data = [
+            normalize_score_row(self.tree.item(row_id)["values"])
+            for row_id in self.tree.get_children()
+        ]
         df_new = pd.DataFrame(new_data, columns=columns)
 
         try:
@@ -5237,54 +5267,6 @@ class QuizAppGUI:
                     f"Refreshed {succeeded} of {total} rosters. Existing local caches were preserved for failures.",
                 )
     
-    def normalize_numeric_cells(self, data):
-        """
-        Converts numeric strings like '3', '2.5' to real numbers (floats or ints)
-        Leaves everything else as strings. Safe for None values.
-        """
-        cleaned = []
-        for row in data:
-            new_row = []
-            for cell in row:
-                cell_str = str(cell).strip() if cell is not None else ""
-                if re.fullmatch(r"\d+(\.\d+)?", cell_str):
-                    num = float(cell_str)
-                    if num.is_integer():
-                        num = int(num)
-                    new_row.append(num)
-                else:
-                    new_row.append(cell_str)
-            cleaned.append(new_row)
-        return cleaned
-
-
-    def sanitize_for_upload(self, data):
-        """Ensures everything written back is either a number or a clean string.
-           Forces headers to be pure text so Sheets doesn't add a leading apostrophe.
-        """
-        result = []
-        for r, row in enumerate(data):
-            cleaned_row = []
-
-            # --- HEADER ROW FIX ---
-            if r == 0:
-                # Force all headers to be simple text, preventing Google auto-numbering
-                cleaned_row = [str(cell).strip() for cell in row]
-                result.append(cleaned_row)
-                continue
-            # ----------------------
-
-            for cell in row:
-                if isinstance(cell, (int, float)):
-                    cleaned_row.append(cell)
-                else:
-                    cleaned_row.append("" if cell is None else str(cell).strip())
-
-            result.append(cleaned_row)
-
-        return result
-
-
     def update_gsheet_from_extracted_data(self):
         """Update existing topic columns and append only genuinely new topics."""
         class_name = self.class_combo.get()
@@ -5321,7 +5303,12 @@ class QuizAppGUI:
                 if key not in header_lookup:
                     headers.append(topic)
                     header_lookup[key] = len(headers)
-                    worksheet.update_cell(1, len(headers), topic)
+                    header_cell = gspread.utils.rowcol_to_a1(1, len(headers))
+                    worksheet.update(
+                        values=[[topic]],
+                        range_name=header_cell,
+                        value_input_option="USER_ENTERED",
+                    )
 
             row_lookup = {name: row for row, name in enumerate(names, start=2)}
             preview_rows = {
@@ -5337,6 +5324,8 @@ class QuizAppGUI:
                     value = values[topic_index] if topic_index < len(values) else ""
                     if isinstance(value, str) and value.strip().casefold() == "skip":
                         value = ""
+                    else:
+                        value = normalize_score_value(value)
                     updates.append({
                         "range": gspread.utils.rowcol_to_a1(row_number, header_lookup[topic.casefold()]),
                         "values": [[value]],

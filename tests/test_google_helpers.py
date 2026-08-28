@@ -15,6 +15,8 @@ helper_names = {
     "excel_sheet_title",
     "format_google_progress_status",
     "format_local_timestamp",
+    "normalize_score_row",
+    "normalize_score_value",
     "read_roster_names",
     "release_download_url",
     "unique_gradebook_title",
@@ -35,6 +37,8 @@ atomic_write_json = namespace["atomic_write_json"]
 excel_sheet_title = namespace["excel_sheet_title"]
 format_local_timestamp = namespace["format_local_timestamp"]
 format_google_progress_status = namespace["format_google_progress_status"]
+normalize_score_row = namespace["normalize_score_row"]
+normalize_score_value = namespace["normalize_score_value"]
 read_roster_names = namespace["read_roster_names"]
 release_download_url = namespace["release_download_url"]
 unique_gradebook_title = namespace["unique_gradebook_title"]
@@ -43,6 +47,18 @@ write_roster_names = namespace["write_roster_names"]
 
 
 class GoogleHelperTests(unittest.TestCase):
+    def test_score_normalization_preserves_numeric_types(self):
+        self.assertEqual(normalize_score_value("10.0"), 10)
+        self.assertIsInstance(normalize_score_value("10.0"), int)
+        self.assertEqual(normalize_score_value(10.0), 10)
+        self.assertEqual(normalize_score_value("7.5"), 7.5)
+        self.assertIsInstance(normalize_score_value("7.5"), float)
+
+    def test_score_normalization_preserves_non_scores_and_blanks(self):
+        self.assertEqual(normalize_score_value(None), "")
+        self.assertEqual(normalize_score_value(" Skip "), "Skip")
+        self.assertEqual(normalize_score_row(["00123", "10.0", "7.5"]), ["00123", 10, 7.5])
+
     def test_google_progress_status_animates_and_reports_slow_connections(self):
         self.assertEqual(
             format_google_progress_status("preparing", 2, 1),
