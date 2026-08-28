@@ -15,10 +15,16 @@ import subprocess, platform
 import threading
 from datetime import datetime, timezone
 from urllib.parse import quote
+from urllib.request import Request as UrlRequest, urlopen
 
 
 #Global Variables
 STOP_PROCESSING = False
+APP_VERSION = "1.0.0"
+GITHUB_OWNER = "kevinpcassidy"
+GITHUB_REPOSITORY = "quiz_processing_system"
+GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPOSITORY}/releases"
+GITHUB_LATEST_RELEASE_API_URL = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPOSITORY}/releases/latest"
 APP_DIR_NAME = "quiz_processing_system"
 SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 OAUTH_CLIENT_FILE = "google_oauth_client.json"
@@ -117,6 +123,44 @@ def format_google_progress_status(stage, elapsed_seconds, dot_count):
     else:
         label = "Preparing"
     return f"Google Sheets: {label}{'.' * dot_count}"
+
+
+def version_tuple(version):
+    """Return a comparable three-part version tuple, accepting a leading v."""
+    match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)", str(version).strip(), re.IGNORECASE)
+    if not match:
+        raise ValueError(f"Invalid application version: {version!r}")
+    return tuple(int(part) for part in match.groups())
+
+
+def release_download_url(release):
+    """Prefer a versioned Windows ZIP asset and fall back to the release page."""
+    assets = release.get("assets") or []
+    zip_assets = [asset for asset in assets if str(asset.get("name", "")).lower().endswith(".zip")]
+    preferred = next(
+        (asset for asset in zip_assets if "windows" in str(asset.get("name", "")).lower()),
+        zip_assets[0] if zip_assets else None,
+    )
+    if preferred and preferred.get("browser_download_url"):
+        return preferred["browser_download_url"]
+    return release.get("html_url") or GITHUB_RELEASES_URL
+
+
+def fetch_latest_release(timeout=5):
+    """Fetch the latest stable public GitHub release without requiring a token."""
+    request = UrlRequest(
+        GITHUB_LATEST_RELEASE_API_URL,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": f"Quiz-Processing-System/{APP_VERSION}",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+    with urlopen(request, timeout=timeout) as response:
+        release = json.load(response)
+    tag = release.get("tag_name", "")
+    version_tuple(tag)
+    return release
 
 
 class AutoScrollableFrame:
@@ -269,7 +313,7 @@ class QuizAppGUI:
         self._load_classes()
         
         # Grading scales storage
-        self.grading_file = os.path.join(os.getcwd(), "saved_grading_scales.json")
+        self.grading_file = os.path.join(self.app_data_dir, "saved_grading_scales.json")
         self.grading_scales = {}
         self._load_grading_scales()
 
@@ -300,6 +344,11 @@ class QuizAppGUI:
         self.google_status_animation_stage = None
         self.google_status_animation_started = 0
         self.google_status_animation_dots = 0
+        self.update_status_var = tk.StringVar(value=f"Version {APP_VERSION}")
+        self.update_status_animation_job = None
+        self.update_status_animation_dots = 0
+        self.latest_release = None
+        self.ignored_update_version = ""
 
         # Heavy optional dependencies are prepared only after the window is
         # built. A requested feature can move its group to the front of the
@@ -341,9 +390,106 @@ class QuizAppGUI:
         if self.google_sheets_enabled_var.get():
             self._start_google_status_animation("preparing")
         self.root.after(100, self._start_dependency_loader)
+        self.root.after(250, self._start_update_check)
  
   
     # ---------------- UTILITY ----------------
+    def _start_update_check(self):
+        """Check for a stable release without delaying or blocking the interface."""
+        self.update_status_animation_dots = 0
+        self._animate_update_status()
+        threading.Thread(target=self._update_check_worker, daemon=True).start()
+
+    def _animate_update_status(self):
+        self.update_status_animation_dots = (self.update_status_animation_dots % 3) + 1
+        self.update_status_var.set(f"Checking for updates{'.' * self.update_status_animation_dots}")
+        self.update_status_animation_job = self.root.after(500, self._animate_update_status)
+
+    def _stop_update_status_animation(self):
+        if self.update_status_animation_job is not None:
+            try:
+                self.root.after_cancel(self.update_status_animation_job)
+            except tk.TclError:
+                pass
+        self.update_status_animation_job = None
+
+    def _update_check_worker(self):
+        try:
+            release = fetch_latest_release()
+        except Exception:
+            self.root.after(0, self._finish_update_check_unavailable)
+            return
+        self.root.after(0, lambda: self._finish_update_check(release))
+
+    def _finish_update_check_unavailable(self):
+        self._stop_update_status_animation()
+        self.update_status_var.set(f"Version {APP_VERSION} · Update check unavailable")
+
+    def _finish_update_check(self, release):
+        self._stop_update_status_animation()
+        remote_version = str(release["tag_name"]).lstrip("vV")
+        if version_tuple(remote_version) <= version_tuple(APP_VERSION):
+            self.update_status_var.set(f"Version {APP_VERSION} is up to date")
+            return
+        self.latest_release = release
+        if remote_version == self.ignored_update_version:
+            self.update_status_var.set(f"Version {APP_VERSION} · Update {remote_version} ignored")
+        else:
+            self.update_status_var.set(f"Version {remote_version} is available")
+        self._refresh_update_button()
+
+    def _refresh_update_button(self):
+        if hasattr(self, "update_download_button"):
+            if self.latest_release:
+                self.update_download_button.pack(fill="x", padx=18, pady=(6, 10))
+            else:
+                self.update_download_button.pack_forget()
+
+    def _show_update_dialog(self):
+        if not self.latest_release:
+            return
+        remote_version = str(self.latest_release["tag_name"]).lstrip("vV")
+        popup = tk.Toplevel(self.root)
+        popup.title("Quiz Processing System Update")
+        popup.transient(self.root)
+        popup.grab_set()
+        popup.resizable(False, False)
+        frame = ttk.Frame(popup, padding=20)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(
+            frame,
+            text=f"Version {remote_version} is available",
+            font=("TkDefaultFont", 14, "bold"),
+        ).pack(pady=(0, 12))
+        ttk.Label(
+            frame,
+            text=(
+                "Your classes, settings, grading scales, roster caches, and Google authorization "
+                "are saved locally in your Windows application-data folder.\n\n"
+                "Close Quiz Processing System, delete the entire current Quiz Processing System "
+                "program directory, and unzip the new version wherever you want to keep it.\n\n"
+                f"Do not delete: %LOCALAPPDATA%\\{APP_DIR_NAME}"
+            ),
+            wraplength=520,
+            justify="left",
+        ).pack()
+        ignore_var = tk.BooleanVar(value=remote_version == self.ignored_update_version)
+        ttk.Checkbutton(frame, text="Ignore this update", variable=ignore_var).pack(anchor="w", pady=(16, 12))
+
+        def close_dialog(open_download=False):
+            self.ignored_update_version = remote_version if ignore_var.get() else ""
+            self.save_settings()
+            popup.destroy()
+            if open_download:
+                webbrowser.open(release_download_url(self.latest_release))
+            self._finish_update_check(self.latest_release)
+
+        buttons = ttk.Frame(frame)
+        buttons.pack(fill="x")
+        ttk.Button(buttons, text="Download Update", command=lambda: close_dialog(True)).pack(side="left")
+        ttk.Button(buttons, text="Cancel", command=close_dialog).pack(side="right")
+        popup.protocol("WM_DELETE_WINDOW", close_dialog)
+
     def _start_google_status_animation(self, stage):
         """Animate the startup status until Google reaches a final state."""
         self._stop_google_status_animation()
@@ -497,6 +643,7 @@ class QuizAppGUI:
 
     def _on_close(self):
         self._stop_google_status_animation()
+        self._stop_update_status_animation()
         #Delete temp copies of gradebook
         self._cleanup_temp_gradebook_copies()
         
@@ -529,6 +676,7 @@ class QuizAppGUI:
                 selected = data.get("google_spreadsheet", {})
                 self.google_spreadsheet_id = selected.get("id", "")
                 self.google_sheet_title_var.set(selected.get("title", "None created"))
+                self.ignored_update_version = data.get("ignored_update_version", "")
             except Exception as e:
                 print(f"[DEBUG] Failed to load settings: {e}")
         else:
@@ -550,6 +698,7 @@ class QuizAppGUI:
                 "google_sheets_enabled": self.google_sheets_enabled_var.get(),
                 "show_google_extraction_warning": self.show_google_extraction_warning_var.get(),
                 "google_rosters_last_updated": getattr(self, "google_rosters_last_updated", ""),
+                "ignored_update_version": self.ignored_update_version,
                 "google_spreadsheet": {
                     "id": self.google_spreadsheet_id,
                     "title": self.google_sheet_title_var.get()
@@ -563,7 +712,7 @@ class QuizAppGUI:
         """Copy legacy mutable files into LOCALAPPDATA without deleting originals."""
         if self.app_data_dir == self.project_root:
             return
-        for filename in ("quiz_settings.json", "saved_classes.json"):
+        for filename in ("quiz_settings.json", "saved_classes.json", "saved_grading_scales.json"):
             source = os.path.join(self.project_root, filename)
             destination = os.path.join(self.app_data_dir, filename)
             if os.path.exists(source) and not os.path.exists(destination):
@@ -1109,6 +1258,13 @@ class QuizAppGUI:
             wraplength=420,
             justify="center",
         ).pack(pady=(0, 10))
+        ttk.Label(home, textvariable=self.update_status_var, justify="center").pack(pady=(0, 4))
+        self.update_download_button = ttk.Button(
+            home,
+            text="Download Update",
+            command=self._show_update_dialog,
+        )
+        self._refresh_update_button()
         ttk.Separator(home, orient="horizontal").pack(fill="x", pady=(0, 20))
         ttk.Label(home, text="YouTube Tutorials:", font=("TkDefaultFont", 12, "bold")).pack(pady=(0, 10))
         link_label = tk.Label(

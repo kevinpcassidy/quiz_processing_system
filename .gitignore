@@ -4,6 +4,10 @@
 # Virtual Environment files
 venv/
 
+# Python bytecode and test caches
+__pycache__/
+*.py[cod]
+
 
 
 # Local app settings

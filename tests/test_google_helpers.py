@@ -8,7 +8,7 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 
-source = Path("quiz_pipeline_gui_v6_personal.py").read_text(encoding="utf-8")
+source = Path("app.py").read_text(encoding="utf-8")
 module = ast.parse(source)
 helper_names = {
     "atomic_write_json",
@@ -16,18 +16,29 @@ helper_names = {
     "format_google_progress_status",
     "format_local_timestamp",
     "read_roster_names",
+    "release_download_url",
     "unique_gradebook_title",
+    "version_tuple",
     "write_roster_names",
 }
 wanted = [node for node in module.body if isinstance(node, ast.FunctionDef) and node.name in helper_names]
-namespace = {"os": os, "json": json, "datetime": datetime, "csv": csv, "re": re}
-exec(compile(ast.Module(body=wanted, type_ignores=[]), "quiz_pipeline_gui_v6_personal.py", "exec"), namespace)
+namespace = {
+    "os": os,
+    "json": json,
+    "datetime": datetime,
+    "csv": csv,
+    "re": re,
+    "GITHUB_RELEASES_URL": "https://github.com/kevinpcassidy/quiz_processing_system/releases",
+}
+exec(compile(ast.Module(body=wanted, type_ignores=[]), "app.py", "exec"), namespace)
 atomic_write_json = namespace["atomic_write_json"]
 excel_sheet_title = namespace["excel_sheet_title"]
 format_local_timestamp = namespace["format_local_timestamp"]
 format_google_progress_status = namespace["format_google_progress_status"]
 read_roster_names = namespace["read_roster_names"]
+release_download_url = namespace["release_download_url"]
 unique_gradebook_title = namespace["unique_gradebook_title"]
+version_tuple = namespace["version_tuple"]
 write_roster_names = namespace["write_roster_names"]
 
 
@@ -115,6 +126,26 @@ class GoogleHelperTests(unittest.TestCase):
         formatted = format_local_timestamp("2026-08-25T15:42:18+00:00")
         self.assertIn("August 25, 2026", formatted)
         self.assertRegex(formatted, r"\d{2}:\d{2}:\d{2} [AP]M")
+
+    def test_versions_accept_v_prefix_and_compare_numerically(self):
+        self.assertEqual(version_tuple("v1.2.3"), (1, 2, 3))
+        self.assertGreater(version_tuple("1.10.0"), version_tuple("1.9.9"))
+        with self.assertRaises(ValueError):
+            version_tuple("1.2")
+
+    def test_release_download_prefers_windows_zip(self):
+        release = {
+            "html_url": "https://example.invalid/release",
+            "assets": [
+                {"name": "source.zip", "browser_download_url": "https://example.invalid/source.zip"},
+                {"name": "Quiz-Processing-System-1.1.0-Windows.zip", "browser_download_url": "https://example.invalid/windows.zip"},
+            ],
+        }
+        self.assertEqual(release_download_url(release), "https://example.invalid/windows.zip")
+
+    def test_release_download_falls_back_to_release_page(self):
+        release = {"html_url": "https://example.invalid/release", "assets": []}
+        self.assertEqual(release_download_url(release), "https://example.invalid/release")
 
 
 if __name__ == "__main__":

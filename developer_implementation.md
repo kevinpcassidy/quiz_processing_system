@@ -20,7 +20,7 @@ The OAuth grant uses only `https://www.googleapis.com/auth/drive.file`. The prog
    - Request only `https://www.googleapis.com/auth/drive.file`.
 4. During development, add each tester as a test user. Before conference distribution, move the app to Production and complete any Google publishing requirements shown by the console.
 5. Create an OAuth client with application type **Desktop app**.
-6. Download the client JSON, rename it exactly `google_oauth_client.json`, and place it beside `quiz_pipeline_gui_v6_personal.py` (or beside the packaged executable/resource bundle).
+6. Download the client JSON, rename it exactly `google_oauth_client.json`, and place it beside `app.py` (or beside the packaged executable/resource bundle).
 7. Never distribute a service-account key or any user's `google_token.json`.
 
 A Desktop OAuth client configuration identifies the distributed application; it is not a protected server credential. Each teacher authorizes their own account and receives a private token on their computer.
@@ -56,7 +56,7 @@ The application creates `CURRENTYEAR-NEXTYEAR Quiz Processing System`, adding `_
 Run from the repository root:
 
 ```powershell
-python -m py_compile quiz_pipeline_gui_v6_personal.py
+python -m py_compile app.py
 python -m unittest discover -s tests -v
 ```
 
@@ -147,3 +147,24 @@ Additional manual checks:
 - [ ] Suppressing the safety confirmation persists, and Advanced Settings can restore it.
 - [ ] Changing Google column A after extraction starts prevents every Sheets write.
 - [ ] Complete refreshes update the local timestamp; partial refreshes preserve the prior complete time.
+
+## Application releases
+
+`app.py` is the source entry point. `APP_VERSION` in that file is the authoritative
+application version and must match the GitHub Release tag (for example, application
+version `1.0.0` uses tag `v1.0.0`). Normal update checks use only the latest stable,
+non-draft GitHub Release.
+
+Build the Windows one-directory distribution from the repository root:
+
+```powershell
+python -m pip install pyinstaller
+pyinstaller --clean --noconfirm quiz_processing_system.spec
+Compress-Archive -Path "dist\Quiz Processing System\*" -DestinationPath "Quiz-Processing-System-1.0.0-Windows.zip"
+```
+
+Attach the versioned ZIP to the matching GitHub Release. The application prefers a
+`.zip` release asset containing `Windows` in its filename and falls back to the
+release page if no suitable asset exists. Before publishing, launch the packaged
+executable, exercise PDF/OCR and export features, and verify that the Home panel
+reports the released version.
