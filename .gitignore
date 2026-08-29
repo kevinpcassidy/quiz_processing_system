@@ -22,9 +22,9 @@ credentials.json
 #release zip files
 *.zip
 
-do not upload all vendor files from poppler and tesseract
+#do not upload all vendor files from poppler and tesseract
 vendor/
 
-keep vendor read me and documentation
+#keep vendor read me and documentation
 !vendor/tesseract/doc/*
 !vendor/poppler/docs/*
