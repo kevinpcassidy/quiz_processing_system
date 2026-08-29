@@ -3,6 +3,8 @@ import csv
 import json
 import os
 import re
+import subprocess
+import sys
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -21,6 +23,11 @@ helper_names = {
     "normalize_score_value",
     "read_roster_names",
     "release_download_url",
+    "resource_root",
+    "bundled_tool_paths",
+    "missing_packaged_resources",
+    "configure_tesseract",
+    "configure_pdf2image",
     "unique_gradebook_title",
     "version_tuple",
     "write_roster_names",
@@ -32,6 +39,20 @@ namespace = {
     "datetime": datetime,
     "csv": csv,
     "re": re,
+    "sys": sys,
+    "subprocess": subprocess,
+    "platform": __import__("platform"),
+    "__file__": str(Path("app.py").resolve()),
+    "PACKAGED_RESOURCE_PATHS": (
+        "google_oauth_client.json",
+        "reference",
+        "LICENSE",
+        "THIRD_PARTY_LICENSES.txt",
+        os.path.join("vendor", "tesseract", "tesseract.exe"),
+        os.path.join("vendor", "tesseract", "tessdata", "eng.traineddata"),
+        os.path.join("vendor", "poppler", "Library", "bin", "pdfinfo.exe"),
+        os.path.join("vendor", "poppler", "Library", "bin", "pdftoppm.exe"),
+    ),
     "GITHUB_RELEASES_URL": "https://github.com/kevinpcassidy/quiz_processing_system/releases",
     "SAMPLE_GRADING_SCALE": [5, 6, 7, 8, 9, 10],
 }
@@ -48,9 +69,74 @@ release_download_url = namespace["release_download_url"]
 unique_gradebook_title = namespace["unique_gradebook_title"]
 version_tuple = namespace["version_tuple"]
 write_roster_names = namespace["write_roster_names"]
+resource_root = namespace["resource_root"]
+bundled_tool_paths = namespace["bundled_tool_paths"]
+missing_packaged_resources = namespace["missing_packaged_resources"]
+configure_tesseract = namespace["configure_tesseract"]
+configure_pdf2image = namespace["configure_pdf2image"]
 
 
 class GoogleHelperTests(unittest.TestCase):
+    def test_resource_root_uses_pyinstaller_directory_when_frozen(self):
+        old_frozen = getattr(sys, "frozen", None)
+        old_meipass = getattr(sys, "_MEIPASS", None)
+        try:
+            sys.frozen = True
+            sys._MEIPASS = os.path.join("some", "bundle")
+            self.assertEqual(resource_root(), os.path.abspath(sys._MEIPASS))
+        finally:
+            if old_frozen is None:
+                delattr(sys, "frozen")
+            else:
+                sys.frozen = old_frozen
+            if old_meipass is None:
+                delattr(sys, "_MEIPASS")
+            else:
+                sys._MEIPASS = old_meipass
+
+    def test_bundled_tool_paths_require_all_four_runtime_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            required = (
+                "vendor/tesseract/tesseract.exe",
+                "vendor/tesseract/tessdata/eng.traineddata",
+                "vendor/poppler/Library/bin/pdfinfo.exe",
+                "vendor/poppler/Library/bin/pdftoppm.exe",
+            )
+            for relative_path in required:
+                path = Path(directory, relative_path)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.touch()
+            tesseract, poppler = bundled_tool_paths(directory)
+            self.assertEqual(tesseract, os.path.join(directory, required[0]))
+            self.assertEqual(poppler, os.path.join(directory, "vendor/poppler/Library/bin"))
+            Path(directory, required[-1]).unlink()
+            self.assertEqual(bundled_tool_paths(directory), (None, None))
+
+    def test_missing_packaged_resources_reports_relative_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertIn("google_oauth_client.json", missing_packaged_resources(directory))
+            Path(directory, "google_oauth_client.json").touch()
+            self.assertNotIn("google_oauth_client.json", missing_packaged_resources(directory))
+
+    def test_tesseract_configuration_sets_command(self):
+        fake_api = SimpleNamespace(
+            tesseract_cmd="tesseract",
+            subprocess_args=lambda include_stdout=True: {"stdout": include_stdout},
+        )
+        fake_module = SimpleNamespace(pytesseract=fake_api)
+        configure_tesseract(fake_module, "vendor/tesseract/tesseract.exe")
+        self.assertEqual(fake_api.tesseract_cmd, "vendor/tesseract/tesseract.exe")
+        self.assertEqual(fake_api.subprocess_args(False)["stdout"], False)
+
+    def test_pdf2image_configuration_preserves_process_arguments(self):
+        calls = []
+        implementation = SimpleNamespace(
+            Popen=lambda *args, **kwargs: calls.append((args, kwargs)) or "process"
+        )
+        configure_pdf2image(SimpleNamespace(pdf2image=implementation))
+        self.assertEqual(implementation.Popen(["pdfinfo"], env={"A": "B"}), "process")
+        self.assertEqual(calls, [((["pdfinfo"],), {"env": {"A": "B"}})])
+
     def test_score_normalization_preserves_numeric_types(self):
         self.assertEqual(normalize_score_value("10.0"), 10)
         self.assertIsInstance(normalize_score_value("10.0"), int)
@@ -219,6 +305,21 @@ class SampleWorksheetTests(unittest.TestCase):
         self.assertTrue(Path("reference/SAMPLE.xlsx").is_file())
         spec = Path("quiz_processing_system.spec").read_text(encoding="utf-8")
         self.assertIn('("reference", "reference")', spec)
+
+    def test_release_spec_bundles_only_explicit_release_resources(self):
+        spec = Path("quiz_processing_system.spec").read_text(encoding="utf-8")
+        for resource in (
+            '"google_oauth_client.json"',
+            '("vendor/tesseract", "vendor/tesseract")',
+            '("vendor/poppler", "vendor/poppler")',
+            '("LICENSE", ".")',
+            '("THIRD_PARTY_LICENSES.txt", ".")',
+            'contents_directory="."',
+            "console=False",
+        ):
+            self.assertIn(resource, spec)
+        for excluded in ('("tests",', '("venv",', '(".git",', '("rosters",'):
+            self.assertNotIn(excluded, spec)
 
 
 if __name__ == "__main__":

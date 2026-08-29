@@ -6,6 +6,7 @@ import os
 import shutil, tempfile
 from tkinter import font as tkfont
 import importlib
+import sys
 import re
 import csv
 import io
@@ -48,6 +49,78 @@ DEPENDENCY_LABELS = {
     "pdf": "PDF and calibration tools",
     "ocr": "OCR and name-matching tools",
 }
+
+PACKAGED_RESOURCE_PATHS = (
+    OAUTH_CLIENT_FILE,
+    "reference",
+    "LICENSE",
+    "THIRD_PARTY_LICENSES.txt",
+    os.path.join("vendor", "tesseract", "tesseract.exe"),
+    os.path.join("vendor", "tesseract", "tessdata", "eng.traineddata"),
+    os.path.join("vendor", "poppler", "Library", "bin", "pdfinfo.exe"),
+    os.path.join("vendor", "poppler", "Library", "bin", "pdftoppm.exe"),
+)
+
+
+def resource_root():
+    """Return the source tree or PyInstaller's unpacked resource directory."""
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return os.path.abspath(sys._MEIPASS)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def bundled_tool_paths(root=None):
+    """Return bundled tool locations when a complete local vendor tree exists."""
+    root = root or resource_root()
+    tesseract = os.path.join(root, "vendor", "tesseract", "tesseract.exe")
+    poppler_bin = os.path.join(root, "vendor", "poppler", "Library", "bin")
+    required = (
+        tesseract,
+        os.path.join(root, "vendor", "tesseract", "tessdata", "eng.traineddata"),
+        os.path.join(poppler_bin, "pdfinfo.exe"),
+        os.path.join(poppler_bin, "pdftoppm.exe"),
+    )
+    if all(os.path.isfile(path) for path in required):
+        return tesseract, poppler_bin
+    return None, None
+
+
+def missing_packaged_resources(root=None):
+    """List required release resources missing from a frozen application."""
+    root = root or resource_root()
+    return [
+        relative_path
+        for relative_path in PACKAGED_RESOURCE_PATHS
+        if not os.path.exists(os.path.join(root, relative_path))
+    ]
+
+
+def configure_tesseract(tesseract_module, executable):
+    """Point pytesseract at the bundled executable and hide its Windows process."""
+    if executable:
+        tesseract_module.pytesseract.tesseract_cmd = executable
+    original_subprocess_args = tesseract_module.pytesseract.subprocess_args
+
+    def hidden_subprocess_args(include_stdout=True):
+        kwargs = original_subprocess_args(include_stdout)
+        if platform.system() == "Windows" and hasattr(subprocess, "CREATE_NO_WINDOW"):
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        return kwargs
+
+    tesseract_module.pytesseract.subprocess_args = hidden_subprocess_args
+
+
+def configure_pdf2image(pdf2image_module):
+    """Prevent bundled Poppler utilities from opening Windows console windows."""
+    implementation = pdf2image_module.pdf2image
+    original_popen = implementation.Popen
+
+    def hidden_popen(*args, **kwargs):
+        if platform.system() == "Windows" and hasattr(subprocess, "CREATE_NO_WINDOW"):
+            kwargs.setdefault("creationflags", subprocess.CREATE_NO_WINDOW)
+        return original_popen(*args, **kwargs)
+
+    implementation.Popen = hidden_popen
 
 
 def atomic_write_json(path, data):
@@ -327,7 +400,8 @@ class QuizAppGUI:
     
         # Mutable user files belong in per-user app data on Windows. During
         # source development on other platforms, keep the historical repo path.
-        self.project_root = os.path.dirname(os.path.abspath(__file__))
+        self.project_root = resource_root()
+        self.tesseract_executable, self.poppler_bin = bundled_tool_paths(self.project_root)
         local_app_data = os.environ.get("LOCALAPPDATA")
         self.app_data_dir = (
             os.path.join(local_app_data, APP_DIR_NAME)
@@ -585,8 +659,7 @@ class QuizAppGUI:
                     self.dependency_states[group] = "ready"
             self.root.after(0, lambda name=group: self._finish_dependency_group(name))
 
-    @staticmethod
-    def _load_dependency_group(group):
+    def _load_dependency_group(self, group):
         global gspread, Request, RefreshError, Credentials, InstalledAppFlow
         global pd, convert_from_path, pdfinfo_from_path
         global Image, ImageEnhance, ImageTk, cv2, np, pytesseract, process
@@ -601,6 +674,7 @@ class QuizAppGUI:
             importlib.import_module("openpyxl")
         elif group == "pdf":
             pdf2image = importlib.import_module("pdf2image")
+            configure_pdf2image(pdf2image)
             convert_from_path = pdf2image.convert_from_path
             pdfinfo_from_path = pdf2image.pdfinfo_from_path
             pil_image = importlib.import_module("PIL.Image")
@@ -613,6 +687,7 @@ class QuizAppGUI:
             cv2 = importlib.import_module("cv2")
         elif group == "ocr":
             pytesseract = importlib.import_module("pytesseract")
+            configure_tesseract(pytesseract, self.tesseract_executable)
             process = importlib.import_module("rapidfuzz.process")
 
     def _finish_dependency_group(self, group):
@@ -2935,7 +3010,7 @@ class QuizAppGUI:
 
         try:
             # Poppler reading is heavy; runs in this worker thread
-            pages = convert_from_path(pdf_path, dpi=200)
+            pages = convert_from_path(pdf_path, dpi=200, poppler_path=self.poppler_bin)
             if self.stop_processing:
                 return
 
@@ -4629,7 +4704,13 @@ class QuizAppGUI:
 
         try:
             # --- Convert first page to image ---
-            pages = convert_from_path(pdf_path, dpi=200, first_page=1, last_page=1)
+            pages = convert_from_path(
+                pdf_path,
+                dpi=200,
+                first_page=1,
+                last_page=1,
+                poppler_path=self.poppler_bin,
+            )
             first_page = pages[0]
             self.right_full_image = first_page  # full-res reference
 
@@ -5560,5 +5641,15 @@ class QuizAppGUI:
 
 if __name__ == "__main__":
     root = tk.Tk()
-    app = QuizAppGUI(root)
-    root.mainloop()
+    missing = missing_packaged_resources() if getattr(sys, "frozen", False) else []
+    if missing:
+        messagebox.showerror(
+            "Quiz Processing System could not start",
+            "This installation is incomplete. Reinstall the application.\n\nMissing:\n- "
+            + "\n- ".join(missing),
+            parent=root,
+        )
+        root.destroy()
+    else:
+        app = QuizAppGUI(root)
+        root.mainloop()

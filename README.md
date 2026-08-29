@@ -6,7 +6,15 @@ Google Sheets developer setup and the complete test checklist are documented in 
 
 ## Run and test from source
 
-Install the dependencies from `requirements.txt`, then run:
+Install the dependencies from `requirements.txt`. PDF conversion requires
+[Poppler](https://poppler.freedesktop.org/) and OCR requires
+[Tesseract](https://github.com/tesseract-ocr/tesseract); install both separately
+and make their command-line programs available on `PATH`. On Windows, this
+means `pdfinfo.exe` and `pdftoppm.exe` from Poppler and `tesseract.exe` from
+Tesseract. A complete local `vendor/` release tree takes precedence when it is
+present, but it is intentionally not stored in Git.
+
+Then run:
 
 ```text
 python app.py
@@ -18,6 +26,36 @@ The source entry point is `app.py`. Run the automated checks with:
 python -m py_compile app.py
 python -m unittest discover -s tests -v
 ```
+
+## Build the Windows release
+
+The supported packaged release target is 64-bit Windows 10 or 11. Prepare the
+following untracked, release-only files in the repository root:
+
+```text
+google_oauth_client.json
+vendor/tesseract/tesseract.exe
+vendor/tesseract/tessdata/eng.traineddata
+vendor/poppler/Library/bin/pdfinfo.exe
+vendor/poppler/Library/bin/pdftoppm.exe
+```
+
+Keep the complete downloaded `vendor/tesseract/` and `vendor/poppler/` trees;
+do not copy only the executables, because their DLLs and license materials are
+required. The OAuth file must be a Google Desktop application client. It is
+embedded in the release but remains excluded from Git.
+
+Build the one-directory application from a 64-bit Windows Python environment:
+
+```text
+pyinstaller --clean --noconfirm quiz_processing_system.spec
+```
+
+The spec validates release inputs, bundles the complete `reference/` directory
+automatically (including `reference/SAMPLE.pdf` when present), and produces a
+directory named `Quiz Processing System`. Before publishing its ZIP, follow the
+release-builder checklist in `THIRD_PARTY_LICENSES.txt`. The project is
+MIT-licensed; bundled components remain subject to their own licenses.
 
 ## Versions and updates
 

@@ -1,9 +1,34 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
+import os
 
 
 hiddenimports = []
-datas = [("reference", "reference")]
+required_release_paths = (
+    "google_oauth_client.json",
+    "reference",
+    "vendor/tesseract/tesseract.exe",
+    "vendor/tesseract/tessdata/eng.traineddata",
+    "vendor/poppler/Library/bin/pdfinfo.exe",
+    "vendor/poppler/Library/bin/pdftoppm.exe",
+    "LICENSE",
+    "THIRD_PARTY_LICENSES.txt",
+)
+missing_release_paths = [path for path in required_release_paths if not os.path.exists(path)]
+if missing_release_paths:
+    raise SystemExit(
+        "Release resources are missing:\n- " + "\n- ".join(missing_release_paths)
+    )
+
+datas = [
+    ("reference", "reference"),
+    ("google_oauth_client.json", "."),
+    ("vendor/tesseract", "vendor/tesseract"),
+    ("vendor/poppler", "vendor/poppler"),
+    ("vendor_docs", "vendor_docs"),
+    ("LICENSE", "."),
+    ("THIRD_PARTY_LICENSES.txt", "."),
+]
 binaries = []
 
 # app.py stages these imports after the window is visible, so PyInstaller cannot
@@ -51,6 +76,7 @@ exe = EXE(
     strip=False,
     upx=True,
     console=False,
+    contents_directory=".",
     icon=None,
 )
 collection = COLLECT(
