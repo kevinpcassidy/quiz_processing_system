@@ -41,7 +41,7 @@ Mutable user data is stored under:
 
 ## Expected spreadsheet format
 
-The application creates `CURRENTYEAR-NEXTYEAR Quiz Processing System`, adding `_1`, `_2`, and so on when an app-created file already uses that title. Its initial tab is `Roster 1`, with `Name` in A1. Local roster CSV files use the same one-column format.
+The application creates `CURRENTYEAR-NEXTYEAR Quiz Processing System`, adding `_1`, `_2`, and so on when an app-created file already uses that title. Its initial tab is `Roster 1`, with `Name` in A1, followed by a `SAMPLE` tab copied from the bundled example workbook. The sample can be mapped as a practice class. If the sample cannot be copied, gradebook creation still succeeds and displays a warning. Local roster CSV files use the same one-column format.
 
 - Create one worksheet tab per roster.
 - Put `Name` in A1 and one student per row in column A.
@@ -50,6 +50,10 @@ The application creates `CURRENTYEAR-NEXTYEAR Quiz Processing System`, adding `_
 - Teachers may rename the spreadsheet or tabs; stable Google IDs preserve the link.
 - Existing topic columns are updated. New topics are appended after the last used header.
 - Edit Google-backed students in column A, then refresh rosters or restart.
+
+## Sample walkthrough
+
+Every launch shows a suppressible sample walkthrough unless the user disables it. Advanced Settings can re-enable it. The walkthrough links the bundled `SAMPLE` worksheet, the `SAMPLE` grading scale (`5, 6, 7, 8, 9, 10`), and the forthcoming `reference/SAMPLE.pdf`. Teachers who do not use Google Sheets can instead import the forthcoming `reference/SAMPLE.csv` as a local roster. The **Use SAMPLE.pdf** action reports a clear warning while that file is absent.
 
 ## Development checks
 
@@ -86,7 +90,8 @@ For a clean Windows integration test, temporarily move `%LOCALAPPDATA%\quiz_proc
 
 - [ ] The first title follows `CURRENTYEAR-NEXTYEAR Quiz Processing System`.
 - [ ] A duplicate app-created title receives `_1`, then `_2`.
-- [ ] The initial tab is `Roster 1` and A1 is `Name`.
+- [ ] The initial tab is `Roster 1` with `Name` in A1, followed by the formatted `SAMPLE` tab.
+- [ ] A missing or invalid sample workbook warns the user without failing gradebook creation.
 - [ ] Creation opens setup guidance; **About Google Sheets** reopens it.
 - [ ] Renaming the spreadsheet is detected at next launch and does not break its link.
 - [ ] **Open Google Sheets Gradebook** opens the correct stable ID.
@@ -94,6 +99,15 @@ For a clean Windows integration test, temporarily move `%LOCALAPPDATA%\quiz_proc
 - [ ] Canceling replacement preserves the current link.
 - [ ] Failed replacement preserves the current link and mappings.
 - [ ] Successful replacement marks old Google class mappings for remapping and leaves local classes untouched.
+
+### Sample walkthrough
+
+- [ ] `SAMPLE` appears in the grading-scale selector with scores `5, 6, 7, 8, 9, 10`.
+- [ ] An existing grading scale named `SAMPLE` is replaced with the canonical sample scores at launch.
+- [ ] The startup walkthrough describes both the Google Sheets sample and local `SAMPLE.csv` alternative.
+- [ ] **Use SAMPLE.pdf** selects `reference/SAMPLE.pdf` when present and warns clearly when absent.
+- [ ] **Don't show this walkthrough again** persists after restarting.
+- [ ] Advanced Settings can re-enable the startup walkthrough, and **Restore Defaults** enables it.
 
 ### Classes and roster cache
 

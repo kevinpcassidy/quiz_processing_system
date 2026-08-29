@@ -5,6 +5,7 @@ import os
 import re
 import tempfile
 import unittest
+from types import SimpleNamespace
 from datetime import datetime
 from pathlib import Path
 
@@ -15,6 +16,7 @@ helper_names = {
     "excel_sheet_title",
     "format_google_progress_status",
     "format_local_timestamp",
+    "install_sample_grading_scale",
     "normalize_score_row",
     "normalize_score_value",
     "read_roster_names",
@@ -31,12 +33,14 @@ namespace = {
     "csv": csv,
     "re": re,
     "GITHUB_RELEASES_URL": "https://github.com/kevinpcassidy/quiz_processing_system/releases",
+    "SAMPLE_GRADING_SCALE": [5, 6, 7, 8, 9, 10],
 }
 exec(compile(ast.Module(body=wanted, type_ignores=[]), "app.py", "exec"), namespace)
 atomic_write_json = namespace["atomic_write_json"]
 excel_sheet_title = namespace["excel_sheet_title"]
 format_local_timestamp = namespace["format_local_timestamp"]
 format_google_progress_status = namespace["format_google_progress_status"]
+install_sample_grading_scale = namespace["install_sample_grading_scale"]
 normalize_score_row = namespace["normalize_score_row"]
 normalize_score_value = namespace["normalize_score_value"]
 read_roster_names = namespace["read_roster_names"]
@@ -116,6 +120,16 @@ class GoogleHelperTests(unittest.TestCase):
                 self.assertEqual(json.load(handle), {"new": True})
             self.assertFalse(os.path.exists(f"{path}.tmp"))
 
+    def test_sample_grading_scale_is_saved_and_replaces_same_named_scale(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "saved_grading_scales.json")
+            scales = {"Existing": [1, 2], "SAMPLE": [99]}
+            install_sample_grading_scale(path, scales)
+            with open(path, encoding="utf-8") as handle:
+                saved = json.load(handle)
+            self.assertEqual(saved["Existing"], [1, 2])
+            self.assertEqual(saved["SAMPLE"], [5, 6, 7, 8, 9, 10])
+
     def test_roster_round_trip_requires_name_header(self):
         with tempfile.TemporaryDirectory() as directory:
             path = os.path.join(directory, "roster.csv")
@@ -162,6 +176,49 @@ class GoogleHelperTests(unittest.TestCase):
     def test_release_download_falls_back_to_release_page(self):
         release = {"html_url": "https://example.invalid/release", "assets": []}
         self.assertEqual(release_download_url(release), "https://example.invalid/release")
+
+
+class SampleWorksheetTests(unittest.TestCase):
+    class FakeSpreadsheet:
+        def __init__(self):
+            self.worksheet = SimpleNamespace(id=2468, update_calls=[])
+            self.add_calls = []
+            self.batch_bodies = []
+
+        def add_worksheet(self, **kwargs):
+            self.add_calls.append(kwargs)
+            self.worksheet.update = lambda **call: self.worksheet.update_calls.append(call)
+            return self.worksheet
+
+        def batch_update(self, body):
+            self.batch_bodies.append(body)
+
+    def test_bundled_sample_is_copied_with_values_and_formatting(self):
+        from app import QuizAppGUI
+
+        app = QuizAppGUI.__new__(QuizAppGUI)
+        app.project_root = os.getcwd()
+        spreadsheet = self.FakeSpreadsheet()
+        app._add_google_sample_worksheet(spreadsheet)
+
+        self.assertEqual(
+            spreadsheet.add_calls,
+            [{"title": "SAMPLE", "rows": 37, "cols": 5, "index": 1}],
+        )
+        values = spreadsheet.worksheet.update_calls[0]["values"]
+        self.assertEqual(values[0][0], "Name")
+        self.assertEqual(values[3][4], "SAMPLE ROSTER")
+        self.assertEqual(values[6][4][:10], "MANDATORY:")
+        requests = spreadsheet.batch_bodies[0]["requests"]
+        self.assertTrue(any("repeatCell" in request for request in requests))
+        self.assertEqual(
+            sum("updateDimensionProperties" in request for request in requests), 5
+        )
+
+    def test_sample_workbook_is_bundled_from_reference_directory(self):
+        self.assertTrue(Path("reference/SAMPLE.xlsx").is_file())
+        spec = Path("quiz_processing_system.spec").read_text(encoding="utf-8")
+        self.assertIn('("reference", "reference")', spec)
 
 
 if __name__ == "__main__":
