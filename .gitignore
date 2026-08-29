@@ -29,3 +29,4 @@ vendor/
 !vendor/tesseract/doc/*
 !vendor/poppler/docs/*
 ~$SAMPLE.xlsx
+~$SAMPLE.xlsx
