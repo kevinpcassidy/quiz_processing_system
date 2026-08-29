@@ -30,6 +30,8 @@ SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 OAUTH_CLIENT_FILE = "google_oauth_client.json"
 TOKEN_FILE = "google_token.json"
 SAMPLE_WORKBOOK = os.path.join("reference", "SAMPLE.xlsx")
+SAMPLE_PDF = os.path.join("reference", "SAMPLE.pdf")
+SAMPLE_GRADING_SCALE = [5, 6, 7, 8, 9, 10]
 
 # These globals are populated by the staged dependency worker after Tk has
 # displayed the main window. Keeping the names stable avoids spreading import
@@ -57,6 +59,13 @@ def atomic_write_json(path, data):
         handle.flush()
         os.fsync(handle.fileno())
     os.replace(temporary_path, path)
+
+
+def install_sample_grading_scale(path, grading_scales):
+    """Install the canonical SAMPLE scale, replacing any scale with that name."""
+    grading_scales["SAMPLE"] = list(SAMPLE_GRADING_SCALE)
+    atomic_write_json(path, grading_scales)
+    return grading_scales
 
 
 def unique_gradebook_title(existing_titles, year=None):
@@ -360,6 +369,7 @@ class QuizAppGUI:
         self.google_sheet_title_var = tk.StringVar(value="None created")
         self.google_roster_status_var = tk.StringVar(value="Rosters have not been updated yet.")
         self.show_google_extraction_warning_var = tk.BooleanVar(value=True)
+        self.show_sample_walkthrough_var = tk.BooleanVar(value=True)
         self.google_spreadsheet_id = ""
         self.google_rosters_last_updated = ""
         self.google_roster_snapshot = None
@@ -416,6 +426,7 @@ class QuizAppGUI:
             self._start_google_status_animation("preparing")
         self.root.after(100, self._start_dependency_loader)
         self.root.after(250, self._start_update_check)
+        self.root.after_idle(self._show_sample_walkthrough_if_enabled)
  
   
     # ---------------- UTILITY ----------------
@@ -696,6 +707,7 @@ class QuizAppGUI:
                     else "Google Sheets: Not Enabled"
                 )
                 self.show_google_extraction_warning_var.set(data.get("show_google_extraction_warning", True))
+                self.show_sample_walkthrough_var.set(data.get("show_sample_walkthrough", True))
                 self.google_rosters_last_updated = data.get("google_rosters_last_updated", "")
                 self.google_roster_status_var.set(format_local_timestamp(self.google_rosters_last_updated))
                 selected = data.get("google_spreadsheet", {})
@@ -712,6 +724,7 @@ class QuizAppGUI:
             self.google_sheets_enabled_var.set(False)
             self.google_connection_status_var.set("Google Sheets: Not Enabled")
             self.show_google_extraction_warning_var.set(True)
+            self.show_sample_walkthrough_var.set(True)
 
     def save_settings(self):
         """Save current settings to file."""
@@ -722,6 +735,7 @@ class QuizAppGUI:
                 "enable_gradebook_var": self.enable_gradebook_var.get(),
                 "google_sheets_enabled": self.google_sheets_enabled_var.get(),
                 "show_google_extraction_warning": self.show_google_extraction_warning_var.get(),
+                "show_sample_walkthrough": self.show_sample_walkthrough_var.get(),
                 "google_rosters_last_updated": getattr(self, "google_rosters_last_updated", ""),
                 "ignored_update_version": self.ignored_update_version,
                 "google_spreadsheet": {
@@ -885,32 +899,92 @@ class QuizAppGUI:
         """Select PDF file and display its path."""
         file_path = filedialog.askopenfilename(filetypes=[("PDF Files", "*.pdf")])
         if file_path:
-            self.pdf_path_var.set(file_path)
-            
-            # --- Reset process tracking when a new PDF is selected ---
-            self.completed_steps = {
-                "pdf_selected": False,
-                "roster_loaded": False,
-                "names_verified": False,
-                "scores_verified": False,
-                "topics_saved": False,
-                "calibrated": False,
-                "csv_downloaded": False
-            }
+            self._set_selected_pdf(file_path)
 
-            # Reset dropdowns and selections to initial state
-            if hasattr(self, "class_combo"):
-                self.class_combo.current(0)
-            if hasattr(self, "scale_combo"):
-                self.scale_combo.current(0)
-                        
-            self._mark_topics_modified()            
-            
-            for step in self.progress_labels:
-                self._set_check(self.progress_labels[step], is_done=False)
+    def _set_selected_pdf(self, file_path):
+        """Select a PDF path and reset state from any previous extraction."""
+        self.pdf_path_var.set(file_path)
+        self.completed_steps = {
+            "pdf_selected": False,
+            "roster_loaded": False,
+            "names_verified": False,
+            "scores_verified": False,
+            "topics_saved": False,
+            "calibrated": False,
+            "csv_downloaded": False,
+        }
+        if hasattr(self, "class_combo"):
+            self.class_combo.current(0)
+        if hasattr(self, "scale_combo"):
+            self.scale_combo.current(0)
+        self._mark_topics_modified()
+        for step in self.progress_labels:
+            self._set_check(self.progress_labels[step], is_done=False)
+        self.mark_step_done("pdf")
 
-            # ✅ Now mark the PDF step complete again (after reset)
-            self.mark_step_done("pdf")
+    def _show_sample_walkthrough_if_enabled(self):
+        if self.show_sample_walkthrough_var.get():
+            self._show_sample_walkthrough()
+
+    def _show_sample_walkthrough(self):
+        popup = tk.Toplevel(self.root)
+        popup.title("Welcome to Quiz Processing System")
+        popup.transient(self.root)
+        popup.grab_set()
+        popup.geometry("680x570")
+        ttk.Label(
+            popup,
+            text="Welcome to Quiz Processing System!",
+            font=("Segoe UI", 17, "bold"),
+        ).pack(pady=(20, 8))
+        ttk.Label(
+            popup,
+            text=(
+                "We're happy you're here. A sample roster, quiz PDF, and grading scale are included "
+                "so you can practice the complete workflow before using your own classes.\n\n"
+                "Try the sample walkthrough:\n\n"
+                "1. Enable Google Sheets and authorize your Google account.\n"
+                "2. Create a Google Sheets gradebook. It will include a worksheet named SAMPLE.\n"
+                "3. Under Set-up Classes, add a Google Sheets class mapped to the SAMPLE worksheet.\n"
+                "4. Use the SAMPLE.pdf quiz file and choose the SAMPLE grading scale.\n"
+                "5. Name the quiz topics, calibrate the sample, process it, and sync the results.\n\n"
+                "Prefer not to use Google Sheets? Import SAMPLE.csv from the reference directory as "
+                "a local roster, then follow the same PDF and grading-scale steps.\n\n"
+                "After the practice run, you'll be ready to use your own rosters, grading scales, and quizzes."
+            ),
+            wraplength=620,
+            justify="left",
+        ).pack(fill="x", padx=25, pady=8)
+        suppress_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            popup,
+            text="Don't show this walkthrough again",
+            variable=suppress_var,
+        ).pack(anchor="w", padx=25, pady=(8, 12))
+        buttons = ttk.Frame(popup)
+        buttons.pack(pady=10)
+
+        def close_walkthrough():
+            if suppress_var.get():
+                self.show_sample_walkthrough_var.set(False)
+                self.save_settings()
+            popup.destroy()
+
+        def use_sample_pdf():
+            sample_path = os.path.join(self.project_root, SAMPLE_PDF)
+            if not os.path.isfile(sample_path):
+                messagebox.showwarning(
+                    "Sample PDF Not Available",
+                    "SAMPLE.pdf is not available yet. You can select another PDF with Browse PDF.",
+                    parent=popup,
+                )
+                return
+            self._set_selected_pdf(sample_path)
+            close_walkthrough()
+
+        ttk.Button(buttons, text="Use SAMPLE.pdf", command=use_sample_pdf).pack(side="left", padx=7)
+        ttk.Button(buttons, text="Get Started", command=close_walkthrough).pack(side="left", padx=7)
+        popup.protocol("WM_DELETE_WINDOW", close_walkthrough)
 
     def _class_selected(self):
         if self.class_combo.get() != "-- Select Class --":
@@ -1189,6 +1263,11 @@ class QuizAppGUI:
             text="Show Google Sheets safety confirmation before extraction",
             variable=self.show_google_extraction_warning_var,
         ).pack(anchor="center", padx=10, pady=(5, 10))
+        ttk.Checkbutton(
+            content_frame,
+            text="Show sample walkthrough when the application starts",
+            variable=self.show_sample_walkthrough_var,
+        ).pack(anchor="center", padx=10, pady=(0, 10))
 
         ttk.Separator(content_frame, orient="horizontal").pack(fill="x", pady=15)
 
@@ -1239,6 +1318,7 @@ class QuizAppGUI:
             self.score_threshold.set(3.2)
             self.enable_gradebook_var.set(False)
             self.show_google_extraction_warning_var.set(True)
+            self.show_sample_walkthrough_var.set(True)
 
         ttk.Button(button_frame, text="Restore Defaults", command=restore_defaults).pack(side="left", padx=10)
 
@@ -2281,6 +2361,7 @@ class QuizAppGUI:
                 self.grading_scales = {}
         else:
             self.grading_scales = {}
+        install_sample_grading_scale(self.grading_file, self.grading_scales)
 
 
     def _edit_grading_scale(self):

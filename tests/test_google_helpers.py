@@ -16,6 +16,7 @@ helper_names = {
     "excel_sheet_title",
     "format_google_progress_status",
     "format_local_timestamp",
+    "install_sample_grading_scale",
     "normalize_score_row",
     "normalize_score_value",
     "read_roster_names",
@@ -32,12 +33,14 @@ namespace = {
     "csv": csv,
     "re": re,
     "GITHUB_RELEASES_URL": "https://github.com/kevinpcassidy/quiz_processing_system/releases",
+    "SAMPLE_GRADING_SCALE": [5, 6, 7, 8, 9, 10],
 }
 exec(compile(ast.Module(body=wanted, type_ignores=[]), "app.py", "exec"), namespace)
 atomic_write_json = namespace["atomic_write_json"]
 excel_sheet_title = namespace["excel_sheet_title"]
 format_local_timestamp = namespace["format_local_timestamp"]
 format_google_progress_status = namespace["format_google_progress_status"]
+install_sample_grading_scale = namespace["install_sample_grading_scale"]
 normalize_score_row = namespace["normalize_score_row"]
 normalize_score_value = namespace["normalize_score_value"]
 read_roster_names = namespace["read_roster_names"]
@@ -116,6 +119,16 @@ class GoogleHelperTests(unittest.TestCase):
             with open(path, encoding="utf-8") as handle:
                 self.assertEqual(json.load(handle), {"new": True})
             self.assertFalse(os.path.exists(f"{path}.tmp"))
+
+    def test_sample_grading_scale_is_saved_and_replaces_same_named_scale(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "saved_grading_scales.json")
+            scales = {"Existing": [1, 2], "SAMPLE": [99]}
+            install_sample_grading_scale(path, scales)
+            with open(path, encoding="utf-8") as handle:
+                saved = json.load(handle)
+            self.assertEqual(saved["Existing"], [1, 2])
+            self.assertEqual(saved["SAMPLE"], [5, 6, 7, 8, 9, 10])
 
     def test_roster_round_trip_requires_name_header(self):
         with tempfile.TemporaryDirectory() as directory:
