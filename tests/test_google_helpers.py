@@ -5,6 +5,7 @@ import os
 import re
 import tempfile
 import unittest
+from types import SimpleNamespace
 from datetime import datetime
 from pathlib import Path
 
@@ -162,6 +163,49 @@ class GoogleHelperTests(unittest.TestCase):
     def test_release_download_falls_back_to_release_page(self):
         release = {"html_url": "https://example.invalid/release", "assets": []}
         self.assertEqual(release_download_url(release), "https://example.invalid/release")
+
+
+class SampleWorksheetTests(unittest.TestCase):
+    class FakeSpreadsheet:
+        def __init__(self):
+            self.worksheet = SimpleNamespace(id=2468, update_calls=[])
+            self.add_calls = []
+            self.batch_bodies = []
+
+        def add_worksheet(self, **kwargs):
+            self.add_calls.append(kwargs)
+            self.worksheet.update = lambda **call: self.worksheet.update_calls.append(call)
+            return self.worksheet
+
+        def batch_update(self, body):
+            self.batch_bodies.append(body)
+
+    def test_bundled_sample_is_copied_with_values_and_formatting(self):
+        from app import QuizAppGUI
+
+        app = QuizAppGUI.__new__(QuizAppGUI)
+        app.project_root = os.getcwd()
+        spreadsheet = self.FakeSpreadsheet()
+        app._add_google_sample_worksheet(spreadsheet)
+
+        self.assertEqual(
+            spreadsheet.add_calls,
+            [{"title": "SAMPLE", "rows": 37, "cols": 5, "index": 1}],
+        )
+        values = spreadsheet.worksheet.update_calls[0]["values"]
+        self.assertEqual(values[0][0], "Name")
+        self.assertEqual(values[3][4], "SAMPLE ROSTER")
+        self.assertEqual(values[6][4][:10], "MANDATORY:")
+        requests = spreadsheet.batch_bodies[0]["requests"]
+        self.assertTrue(any("repeatCell" in request for request in requests))
+        self.assertEqual(
+            sum("updateDimensionProperties" in request for request in requests), 5
+        )
+
+    def test_sample_workbook_is_bundled_from_reference_directory(self):
+        self.assertTrue(Path("reference/SAMPLE.xlsx").is_file())
+        spec = Path("quiz_processing_system.spec").read_text(encoding="utf-8")
+        self.assertIn('("reference", "reference")', spec)
 
 
 if __name__ == "__main__":

@@ -41,7 +41,7 @@ Mutable user data is stored under:
 
 ## Expected spreadsheet format
 
-The application creates `CURRENTYEAR-NEXTYEAR Quiz Processing System`, adding `_1`, `_2`, and so on when an app-created file already uses that title. Its initial tab is `Roster 1`, with `Name` in A1. Local roster CSV files use the same one-column format.
+The application creates `CURRENTYEAR-NEXTYEAR Quiz Processing System`, adding `_1`, `_2`, and so on when an app-created file already uses that title. Its initial tab is `Roster 1`, with `Name` in A1, followed by a `SAMPLE` tab copied from the bundled example workbook. The sample can be mapped as a practice class. If the sample cannot be copied, gradebook creation still succeeds and displays a warning. Local roster CSV files use the same one-column format.
 
 - Create one worksheet tab per roster.
 - Put `Name` in A1 and one student per row in column A.
@@ -86,7 +86,8 @@ For a clean Windows integration test, temporarily move `%LOCALAPPDATA%\quiz_proc
 
 - [ ] The first title follows `CURRENTYEAR-NEXTYEAR Quiz Processing System`.
 - [ ] A duplicate app-created title receives `_1`, then `_2`.
-- [ ] The initial tab is `Roster 1` and A1 is `Name`.
+- [ ] The initial tab is `Roster 1` with `Name` in A1, followed by the formatted `SAMPLE` tab.
+- [ ] A missing or invalid sample workbook warns the user without failing gradebook creation.
 - [ ] Creation opens setup guidance; **About Google Sheets** reopens it.
 - [ ] Renaming the spreadsheet is detected at next launch and does not break its link.
 - [ ] **Open Google Sheets Gradebook** opens the correct stable ID.

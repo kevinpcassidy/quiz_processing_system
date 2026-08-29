@@ -29,6 +29,7 @@ APP_DIR_NAME = "quiz_processing_system"
 SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 OAUTH_CLIENT_FILE = "google_oauth_client.json"
 TOKEN_FILE = "google_token.json"
+SAMPLE_WORKBOOK = os.path.join("reference", "SAMPLE.xlsx")
 
 # These globals are populated by the staged dependency worker after Tk has
 # displayed the main window. Keeping the names stable avoids spreading import
@@ -5123,6 +5124,11 @@ class QuizAppGUI:
             worksheet = spreadsheet.sheet1
             worksheet.update_title("Roster 1")
             worksheet.update(values=[["Name"]], range_name="A1", value_input_option="RAW")
+            sample_error = None
+            try:
+                self._add_google_sample_worksheet(spreadsheet)
+            except Exception as error:
+                sample_error = error
             previous_id = self.google_spreadsheet_id
             self.google_spreadsheet_id = spreadsheet.id
             self.google_sheet_title_var.set(title)
@@ -5135,10 +5141,108 @@ class QuizAppGUI:
             self.save_settings()
             self._update_google_controls_visibility()
             self._show_google_sheets_help(created=True)
+            if sample_error is not None:
+                messagebox.showwarning(
+                    "Sample Worksheet Not Added",
+                    "The gradebook was created, but the SAMPLE worksheet could not be added:\n"
+                    f"{sample_error}",
+                )
         except PermissionError:
             messagebox.showinfo("Authorize Google Sheets", "Authorize Google Sheets before creating a gradebook.")
         except Exception as error:
             messagebox.showerror("Google Sheets Error", f"Could not create the gradebook:\n{error}")
+
+    @staticmethod
+    def _excel_rgb(color):
+        """Convert an openpyxl ARGB color to a Google Sheets RGB color."""
+        if color is None or color.type != "rgb" or not isinstance(color.rgb, str):
+            return None
+        rgb = color.rgb[-6:]
+        try:
+            red, green, blue = (int(rgb[index:index + 2], 16) / 255 for index in (0, 2, 4))
+        except ValueError:
+            return None
+        return {"red": red, "green": green, "blue": blue}
+
+    def _add_google_sample_worksheet(self, spreadsheet):
+        """Copy the bundled Excel sample and its useful formatting into Sheets."""
+        workbook_path = os.path.join(self.project_root, SAMPLE_WORKBOOK)
+        openpyxl = importlib.import_module("openpyxl")
+        workbook = openpyxl.load_workbook(workbook_path, data_only=False, read_only=False)
+        source = workbook.worksheets[0]
+        row_count = max(source.max_row, 1)
+        column_count = max(source.max_column, 1)
+        values = [
+            [cell.value if cell.value is not None else "" for cell in row]
+            for row in source.iter_rows(
+                min_row=1, max_row=row_count, min_col=1, max_col=column_count
+            )
+        ]
+
+        sample = spreadsheet.add_worksheet(
+            title="SAMPLE", rows=row_count, cols=column_count, index=1
+        )
+        sample.update(values=values, range_name="A1", value_input_option="RAW")
+
+        requests = []
+        for row in source.iter_rows(
+            min_row=1, max_row=row_count, min_col=1, max_col=column_count
+        ):
+            for cell in row:
+                if not cell.has_style:
+                    continue
+                text_format = {
+                    "fontFamily": cell.font.name,
+                    "fontSize": cell.font.sz,
+                    "bold": cell.font.bold,
+                    "italic": cell.font.italic,
+                }
+                font_color = self._excel_rgb(cell.font.color)
+                if font_color:
+                    text_format["foregroundColor"] = font_color
+                cell_format = {"textFormat": text_format}
+                fill_color = self._excel_rgb(cell.fill.fgColor)
+                if cell.fill.fill_type == "solid" and fill_color:
+                    cell_format["backgroundColor"] = fill_color
+                if cell.alignment.wrap_text:
+                    cell_format["wrapStrategy"] = "WRAP"
+                if cell.alignment.horizontal:
+                    cell_format["horizontalAlignment"] = cell.alignment.horizontal.upper()
+                if cell.alignment.vertical:
+                    cell_format["verticalAlignment"] = cell.alignment.vertical.upper()
+                requests.append({
+                    "repeatCell": {
+                        "range": {
+                            "sheetId": sample.id,
+                            "startRowIndex": cell.row - 1,
+                            "endRowIndex": cell.row,
+                            "startColumnIndex": cell.column - 1,
+                            "endColumnIndex": cell.column,
+                        },
+                        "cell": {"userEnteredFormat": cell_format},
+                        "fields": "userEnteredFormat",
+                    }
+                })
+
+        for column_number in range(1, column_count + 1):
+            letter = openpyxl.utils.get_column_letter(column_number)
+            width = source.column_dimensions[letter].width
+            if width is None:
+                continue
+            requests.append({
+                "updateDimensionProperties": {
+                    "range": {
+                        "sheetId": sample.id,
+                        "dimension": "COLUMNS",
+                        "startIndex": column_number - 1,
+                        "endIndex": column_number,
+                    },
+                    "properties": {"pixelSize": max(21, round(width * 7 + 5))},
+                    "fields": "pixelSize",
+                }
+            })
+        if requests:
+            spreadsheet.batch_update({"requests": requests})
 
     def _open_google_gradebook(self):
         if not self.google_spreadsheet_id:
@@ -5170,7 +5274,8 @@ class QuizAppGUI:
         if created:
             ttk.Label(popup, text=f"Created: {self.google_sheet_title_var.get()}", style="Bold.TLabel").pack()
         instructions = (
-            "Quiz Processing System created a private gradebook in your Google Drive. Create one tab for each roster. "
+            "Quiz Processing System created a private gradebook in your Google Drive. The SAMPLE tab contains an "
+            "example roster and setup directions; you can map it as a practice class. Create one tab for each roster. "
             "Use 'Name' in cell A1 and enter one student name per row in column A. Rename the spreadsheet or tabs "
             "whenever you like; the program tracks their stable IDs. Do not merge cells in the roster or grade area. "
             "Existing topic headers are reused and new quiz topics are appended after the last used header. After "
