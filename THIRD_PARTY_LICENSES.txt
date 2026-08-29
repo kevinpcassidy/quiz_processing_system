@@ -1,0 +1,164 @@
+QUIZ PROCESSING SYSTEM - THIRD-PARTY SOFTWARE NOTICES
+====================================================
+
+Quiz Processing System is licensed under the MIT License; see LICENSE. The
+licenses below apply only to their respective third-party components. Nothing
+in the Quiz Processing System license changes those terms.
+
+The release preserves upstream documentation under vendor_docs/ and any
+LICENSE, COPYING, NOTICE, README, or copyright files shipped within vendor/.
+Those files are part of these notices and contain the complete applicable
+terms. Source code for open-source components is available from the upstream
+locations named below.
+
+
+BUNDLED PYTHON SOFTWARE
+-----------------------
+
+The application is built with CPython (PSF License) and PyInstaller
+(GPL-2.0-or-later with the PyInstaller bootloader exception). PyInstaller
+collects the following direct Python dependencies and their runtime
+dependencies. Release versions are determined by the release build
+environment; requirements.txt is the authoritative direct-dependency list.
+
+Direct dependencies:
+
+  Component                 License
+  ------------------------  ---------------------------------------------
+  pdf2image                 MIT
+  Pillow                    HPND
+  pytesseract               Apache-2.0
+  RapidFuzz                 MIT
+  pandas                    BSD-3-Clause
+  opencv-python / OpenCV    Apache-2.0
+  NumPy                     BSD-3-Clause
+  gspread                   MIT
+  google-auth               Apache-2.0
+  google-auth-oauthlib      Apache-2.0
+  openpyxl                  MIT
+
+Runtime dependencies installed by these packages may include:
+
+  Component                 License
+  ------------------------  ---------------------------------------------
+  cachetools                MIT
+  certifi                   MPL-2.0
+  cffi                      MIT
+  charset-normalizer        MIT
+  cryptography              Apache-2.0 OR BSD-3-Clause
+  et_xmlfile                MIT
+  idna                      BSD-3-Clause
+  oauthlib                  BSD-3-Clause
+  packaging                 Apache-2.0 OR BSD-2-Clause
+  pyasn1                    BSD-2-Clause
+  pyasn1-modules            BSD-2-Clause
+  pycparser                 BSD-3-Clause
+  python-dateutil           Apache-2.0 OR BSD-3-Clause
+  requests                  Apache-2.0
+  requests-oauthlib         ISC
+  six                       MIT
+  urllib3                   MIT
+
+Python and package license metadata and texts collected by PyInstaller remain
+in the packaged application where supplied by their distributions. Upstream
+project and source links are available through each package's metadata and at
+https://pypi.org/. A release builder must update this list if the resolved
+environment introduces another runtime dependency.
+
+
+TESSERACT OCR WINDOWS DISTRIBUTION
+----------------------------------
+
+  Tesseract version:        5.5.0.20241111
+  Distribution:             UB Mannheim 64-bit Windows build
+  Installer:                tesseract-ocr-w64-setup-5.5.0.20241111.exe
+  Upstream:                 https://github.com/tesseract-ocr/tesseract
+  License:                  Apache-2.0
+  Bundled Leptonica:        1.85.0 (BSD-2-Clause)
+
+The distribution also contains image, archive, compression, and networking
+libraries. Their license and notice files shipped by the selected UB Mannheim
+distribution must remain inside vendor/tesseract/ and are included in the
+release unchanged. The Tesseract Apache-2.0 license and attribution files are
+also preserved under vendor_docs/tesseract/doc/.
+
+
+TESSERACT ENGLISH LANGUAGE DATA
+-------------------------------
+
+  File:                     vendor/tesseract/tessdata/eng.traineddata
+  Size:                     4,113,088 bytes
+  SHA-256:                  7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2
+  Source:                   Bundled with the UB Mannheim distribution above
+  Upstream:                 https://github.com/tesseract-ocr/tessdata
+  License:                  Apache-2.0
+
+The precise tessdata repository and commit for this file have not been
+independently verified. The filename alone is not evidence that it came from
+tessdata, tessdata_fast, or tessdata_best. The checksum above identifies the
+exact redistributed file.
+
+
+POPPLER WINDOWS DISTRIBUTION
+----------------------------
+
+  Poppler version:          25.07.0
+  Windows release:          25.07.0-0 / Release-25.07.0-0.zip
+  Distributor:              oschwartz10612/poppler-windows
+  Distribution source:      https://github.com/oschwartz10612/poppler-windows
+  Upstream:                 https://poppler.freedesktop.org/
+  Core license:             GPL-2.0-only or GPL-3.0-only
+
+This Windows distribution is assembled from conda-forge packages. The entire
+downloaded vendor/poppler/ tree, including its package license metadata, must
+be redistributed unchanged. Poppler's COPYING.txt, COPYING3.txt, Xpdf notice,
+authors, and readme files are preserved under vendor_docs/poppler/docs/.
+
+The redistributed Library/bin directory contains Poppler utilities plus the
+following libraries. The release builder must preserve the corresponding
+license files supplied by the distribution:
+
+  Library / DLL family                  Principal license(s)
+  ------------------------------------  -------------------------------
+  cairo                                 LGPL-2.1-only OR MPL-1.1
+  charset / libcharset                  LGPL-2.1-or-later
+  deflate / zlib                        Zlib
+  Expat (expat, libexpat)               MIT
+  Fontconfig                            MIT
+  FreeType                              FTL OR GPL-2.0-or-later
+  GNU libiconv                          LGPL-2.1-or-later
+  libjpeg-turbo (jpeg8)                 BSD-3-Clause, IJG, Zlib
+  Little CMS (lcms2)                    MIT
+  LERC                                  Apache-2.0
+  OpenSSL (libcrypto-3-x64)             Apache-2.0
+  curl (libcurl)                        curl license (MIT-style)
+  XZ Utils (liblzma)                    0BSD AND public domain
+  libpng                                libpng-2.0
+  libssh2                               BSD-3-Clause
+  libtiff (libtiff, tiff)               libtiff license (BSD-like)
+  Zstandard (libzstd, zstd)             BSD-3-Clause OR GPL-2.0-only
+  OpenJPEG (openjp2)                    BSD-2-Clause
+  Pixman                                MIT
+  Poppler (poppler, poppler-cpp,
+           poppler-glib and PDF tools)  GPL-2.0-only OR GPL-3.0-only
+
+This table identifies the DLL families visible in the selected distribution;
+it does not replace their complete license texts. In case of any discrepancy,
+the license files shipped by the exact conda-forge packages and upstream
+projects control. Corresponding source packages are available through
+https://github.com/conda-forge and the named upstream projects.
+
+
+RELEASE-BUILDER CHECKLIST
+-------------------------
+
+Before distributing a build:
+
+1. Keep LICENSE and this file beside Quiz Processing System.exe.
+2. Keep vendor_docs/ and the complete vendor/tesseract and vendor/poppler trees.
+3. Do not remove license, notice, copyright, package metadata, or readme files
+   from either vendor distribution.
+4. Confirm eng.traineddata has the size and SHA-256 recorded above.
+5. Review the resolved Python environment for dependencies not listed here.
+6. Retain or provide the corresponding source for GPL-covered Poppler binaries
+   in the manner required by the distribution's license terms.

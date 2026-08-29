@@ -22,11 +22,7 @@ credentials.json
 #release zip files
 *.zip
 
-#do not upload all vendor files from poppler and tesseract
+# Release-only Poppler and Tesseract distributions (approximately 140 MB)
 vendor/
-
-#keep vendor read me and documentation
-!vendor/tesseract/doc/*
-!vendor/poppler/docs/*
 ~$SAMPLE.xlsx
 ~$SAMPLE.xlsx
