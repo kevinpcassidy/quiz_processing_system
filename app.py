@@ -2004,12 +2004,12 @@ class QuizAppGUI:
         photo = ImageTk.PhotoImage(img)
 
         # Set window width to image width and reasonable height
-        win_width = 450
-        win_height = min(img.height + 400, 700)
+        win_width = min(img.width+40, 950)
+        win_height = min(img.height + 400, 1000)
         help_window.geometry(
             f"{win_width}x{win_height}+"
             f"{int((help_window.winfo_screenwidth()-win_width)/2)}+"
-            f"{int(help_window.winfo_screenheight()/6)}"
+            f"{int(help_window.winfo_screenheight()/30)}"
         )
 
         # Create canvas + scrollbar
@@ -2079,8 +2079,8 @@ class QuizAppGUI:
                 "We recommend creating a roster of all the classes of one subject, "
                 "so if you teach two different subjects or grade level classes, each would be its own class.\n"
                 "Here is a picture of a properly formatted CSV file.\n"
-                "Lines 1-5 are students in period 1 of 8th grade math... lines 6-10 are period 2.\n"
-                "Students are alphabetized to easily allow for copying/pasting into another file for your gradebook.\n\n")
+                "If you choose to use Google Sheets, you can import rosters from there.\n"
+                "If you'd prefer to use a .csv file locally, we recommend that you select the Manage Gradebook checkbox in the Advanced Menu so you can track all grade scans throughout the year.\n\n")
         ttk.Label(content_frame, text=text, wraplength=win_width-20, justify="left").pack(padx=10, pady=5)
 
         # Image
