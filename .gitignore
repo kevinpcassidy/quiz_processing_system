@@ -21,3 +21,4 @@ credentials.json
 
 #local file for rosters
 rosters/
+/vendor
