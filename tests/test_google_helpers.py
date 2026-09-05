@@ -16,7 +16,9 @@ module = ast.parse(source)
 helper_names = {
     "atomic_write_json",
     "excel_sheet_title",
+    "ensure_worksheet_size",
     "format_google_progress_status",
+    "google_connection_is_connected",
     "format_local_timestamp",
     "install_sample_grading_scale",
     "normalize_score_row",
@@ -54,13 +56,16 @@ namespace = {
         os.path.join("vendor", "poppler", "Library", "bin", "pdftoppm.exe"),
     ),
     "GITHUB_RELEASES_URL": "https://github.com/kevinpcassidy/quiz_processing_system/releases",
+    "GOOGLE_CONNECTED_STATUS": "Google Sheets: Connected",
     "SAMPLE_GRADING_SCALE": [5, 6, 7, 8, 9, 10],
 }
 exec(compile(ast.Module(body=wanted, type_ignores=[]), "app.py", "exec"), namespace)
 atomic_write_json = namespace["atomic_write_json"]
 excel_sheet_title = namespace["excel_sheet_title"]
+ensure_worksheet_size = namespace["ensure_worksheet_size"]
 format_local_timestamp = namespace["format_local_timestamp"]
 format_google_progress_status = namespace["format_google_progress_status"]
+google_connection_is_connected = namespace["google_connection_is_connected"]
 install_sample_grading_scale = namespace["install_sample_grading_scale"]
 normalize_score_row = namespace["normalize_score_row"]
 normalize_score_value = namespace["normalize_score_value"]
@@ -77,6 +82,16 @@ configure_pdf2image = namespace["configure_pdf2image"]
 
 
 class GoogleHelperTests(unittest.TestCase):
+    def test_google_connection_check_only_appears_for_confirmed_success(self):
+        self.assertTrue(google_connection_is_connected("Google Sheets: Connected"))
+        for status in (
+            "Google Sheets: Not Enabled",
+            "Google Sheets: Not Connected",
+            "Google Sheets: Connecting...",
+            "Google Sheets: Reconnection required",
+        ):
+            self.assertFalse(google_connection_is_connected(status))
+
     def test_resource_root_uses_pyinstaller_directory_when_frozen(self):
         old_frozen = getattr(sys, "frozen", None)
         old_meipass = getattr(sys, "_MEIPASS", None)
@@ -238,6 +253,19 @@ class GoogleHelperTests(unittest.TestCase):
         self.assertNotRegex(first, r"[:\\/?*\[\]]")
         self.assertNotEqual(first.casefold(), second.casefold())
 
+    def test_worksheet_grid_expands_only_when_required(self):
+        worksheet = SimpleNamespace(row_count=37, col_count=5, resize_calls=[])
+        worksheet.resize = lambda **kwargs: worksheet.resize_calls.append(kwargs)
+
+        ensure_worksheet_size(worksheet, required_rows=37, required_columns=13)
+        self.assertEqual(worksheet.resize_calls, [{"rows": 37, "cols": 13}])
+
+        worksheet.row_count = 37
+        worksheet.col_count = 13
+        worksheet.resize_calls.clear()
+        ensure_worksheet_size(worksheet, required_rows=20, required_columns=6)
+        self.assertEqual(worksheet.resize_calls, [])
+
     def test_local_timestamp_has_date_and_time(self):
         formatted = format_local_timestamp("2026-08-25T15:42:18+00:00")
         self.assertIn("August 25, 2026", formatted)
@@ -289,7 +317,7 @@ class SampleWorksheetTests(unittest.TestCase):
 
         self.assertEqual(
             spreadsheet.add_calls,
-            [{"title": "SAMPLE", "rows": 37, "cols": 5, "index": 1}],
+            [{"title": "SAMPLE", "rows": 37, "cols": 13, "index": 1}],
         )
         values = spreadsheet.worksheet.update_calls[0]["values"]
         self.assertEqual(values[0][0], "Name")
