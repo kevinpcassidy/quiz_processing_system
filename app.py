@@ -33,6 +33,8 @@ TOKEN_FILE = "google_token.json"
 SAMPLE_WORKBOOK = os.path.join("reference", "SAMPLE.xlsx")
 SAMPLE_PDF = os.path.join("reference", "SAMPLE.pdf")
 SAMPLE_GRADING_SCALE = [5, 6, 7, 8, 9, 10]
+SAMPLE_GOOGLE_SHEET_COLUMNS = 13
+GOOGLE_CONNECTED_STATUS = "✅ Google Sheets: Connected"
 
 # These globals are populated by the staged dependency worker after Tk has
 # displayed the main window. Keeping the names stable avoids spreading import
@@ -212,6 +214,16 @@ def normalize_score_row(row):
     if not values:
         return values
     return [values[0], *(normalize_score_value(value) for value in values[1:])]
+
+
+def ensure_worksheet_size(worksheet, required_rows=None, required_columns=None):
+    """Expand a worksheet before writing beyond its current grid limits."""
+    current_rows = int(getattr(worksheet, "row_count", 0) or 0)
+    current_columns = int(getattr(worksheet, "col_count", 0) or 0)
+    rows = max(current_rows, int(required_rows or 0))
+    columns = max(current_columns, int(required_columns or 0))
+    if rows > current_rows or columns > current_columns:
+        worksheet.resize(rows=rows or None, cols=columns or None)
 
 
 def format_local_timestamp(iso_timestamp):
@@ -458,6 +470,9 @@ class QuizAppGUI:
         self.update_status_animation_dots = 0
         self.latest_release = None
         self.ignored_update_version = ""
+        self.pdf_preview_animation_job = None
+        self.pdf_preview_animation_dots = 0
+        self.pdf_preview_request = None
 
         # Heavy optional dependencies are prepared only after the window is
         # built. A requested feature can move its group to the front of the
@@ -504,6 +519,21 @@ class QuizAppGUI:
  
   
     # ---------------- UTILITY ----------------
+    def _position_popup(self, popup, width=None, height=None):
+        """Place an app-owned popup relative to the main window's current monitor."""
+        def apply_position():
+            if not popup.winfo_exists():
+                return
+            self.root.update_idletasks()
+            popup.update_idletasks()
+            popup_width = width or popup.winfo_reqwidth()
+            popup_height = height or popup.winfo_reqheight()
+            x = self.root.winfo_rootx() + max(0, self.root.winfo_width() // 4)
+            y = self.root.winfo_rooty() + max(0, self.root.winfo_height() // 30)
+            popup.geometry(f"{popup_width}x{popup_height}+{x}+{y}")
+
+        popup.after_idle(apply_position)
+
     def _start_update_check(self):
         """Check for a stable release without delaying or blocking the interface."""
         self.update_status_animation_dots = 0
@@ -564,6 +594,7 @@ class QuizAppGUI:
         popup.transient(self.root)
         popup.grab_set()
         popup.resizable(False, False)
+        self._position_popup(popup)
         frame = ttk.Frame(popup, padding=20)
         frame.pack(fill="both", expand=True)
         ttk.Label(
@@ -706,6 +737,8 @@ class QuizAppGUI:
             if group == "google":
                 self._stop_google_status_animation()
                 self.google_connection_status_var.set("Google Sheets: Not Connected")
+            elif group == "pdf" and self.pdf_preview_request:
+                self._show_pdf_preview_error(self.pdf_preview_request, error)
             messagebox.showerror(
                 f"{DEPENDENCY_LABELS[group]} unavailable",
                 f"The required {DEPENDENCY_LABELS[group].lower()} could not be prepared:\n\n{error}\n\n"
@@ -744,6 +777,7 @@ class QuizAppGUI:
         popup.grab_set()
         popup.resizable(False, False)
         popup.protocol("WM_DELETE_WINDOW", lambda: None)
+        self._position_popup(popup)
         ttk.Label(popup, text=message, padding=24).pack()
         progress = ttk.Progressbar(popup, mode="indeterminate", length=280)
         progress.pack(padx=24, pady=(0, 24))
@@ -755,6 +789,7 @@ class QuizAppGUI:
     def _on_close(self):
         self._stop_google_status_animation()
         self._stop_update_status_animation()
+        self._stop_pdf_preview_animation()
         #Delete temp copies of gradebook
         self._cleanup_temp_gradebook_copies()
         
@@ -996,6 +1031,75 @@ class QuizAppGUI:
         for step in self.progress_labels:
             self._set_check(self.progress_labels[step], is_done=False)
         self.mark_step_done("pdf")
+        self._request_pdf_first_page_preview(file_path)
+
+    def _request_pdf_first_page_preview(self, file_path):
+        """Show progress while PDF tools load, then preview the current selection."""
+        self.pdf_preview_request = file_path
+        self._show_pdf_preview_loading(file_path)
+        with self.dependency_lock:
+            state = self.dependency_states["pdf"]
+            if state == "ready":
+                self.root.after_idle(lambda: self._display_pdf_first_page(file_path))
+                return
+            if state == "failed":
+                error = self.dependency_errors.get("pdf")
+                self.root.after_idle(lambda: self._show_pdf_preview_error(file_path, error))
+                return
+            self.dependency_callbacks["pdf"].append(
+                lambda: self._display_pdf_first_page(file_path)
+            )
+            if state == "not_started" and "pdf" not in self.dependency_priority:
+                self.dependency_priority.insert(0, "pdf")
+        self._start_dependency_loader()
+
+    def _show_pdf_preview_loading(self, file_path):
+        self._stop_pdf_preview_animation()
+        for widget in self.right_frame.winfo_children():
+            widget.destroy()
+        ttk.Label(
+            self.right_frame,
+            text="Displaying Page 1 of PDF",
+            style="Header.TLabel",
+        ).pack(pady=(8, 12))
+        self.pdf_preview_status_var = tk.StringVar(value="Preparing PDF preview.")
+        ttk.Label(self.right_frame, textvariable=self.pdf_preview_status_var).pack(pady=(30, 8))
+        progress = ttk.Progressbar(self.right_frame, mode="indeterminate", length=280)
+        progress.pack(pady=(0, 12))
+        progress.start(12)
+        self.pdf_preview_animation_dots = 0
+
+        def animate():
+            if self.pdf_preview_request != file_path or not hasattr(self, "pdf_preview_status_var"):
+                return
+            self.pdf_preview_animation_dots = (self.pdf_preview_animation_dots % 3) + 1
+            self.pdf_preview_status_var.set(f"Preparing PDF preview{'.' * self.pdf_preview_animation_dots}")
+            self.pdf_preview_animation_job = self.root.after(500, animate)
+
+        animate()
+
+    def _stop_pdf_preview_animation(self):
+        if self.pdf_preview_animation_job is not None:
+            try:
+                self.root.after_cancel(self.pdf_preview_animation_job)
+            except tk.TclError:
+                pass
+        self.pdf_preview_animation_job = None
+
+    def _show_pdf_preview_error(self, file_path, error):
+        if self.pdf_preview_request != file_path:
+            return
+        self._stop_pdf_preview_animation()
+        for widget in self.right_frame.winfo_children():
+            widget.destroy()
+        ttk.Label(self.right_frame, text="Displaying Page 1 of PDF", style="Header.TLabel").pack(pady=(8, 12))
+        ttk.Label(
+            self.right_frame,
+            text=f"PDF preview is unavailable:\n{error}",
+            foreground="red",
+            wraplength=500,
+            justify="left",
+        ).pack(pady=20)
 
     def _show_sample_walkthrough_if_enabled(self):
         if self.show_sample_walkthrough_var.get():
@@ -1006,7 +1110,7 @@ class QuizAppGUI:
         popup.title("Welcome to Quiz Processing System")
         popup.transient(self.root)
         popup.grab_set()
-        popup.geometry("680x570")
+        self._position_popup(popup, 680, 570)
         ttk.Label(
             popup,
             text="Welcome to Quiz Processing System!",
@@ -1225,9 +1329,7 @@ class QuizAppGUI:
 
         # --- Set geometry ---
         win_width, win_height = 700, 900
-        x = (advanced_window.winfo_screenwidth() - win_width) // 2
-        y = (advanced_window.winfo_screenheight() - win_height) // 4
-        advanced_window.geometry(f"{win_width}x{win_height}+{x}+{y}")
+        self._position_popup(advanced_window, win_width, win_height)
 
         # --- Canvas with scrollbar ---
         canvas = tk.Canvas(advanced_window, width=win_width, height=win_height)
@@ -1612,6 +1714,7 @@ class QuizAppGUI:
         popup.transient(self.root)
         popup.grab_set()
         popup.resizable(False, False)
+        self._position_popup(popup)
         ttk.Label(
             popup,
             text=detail,
@@ -1637,44 +1740,113 @@ class QuizAppGUI:
 
     #Handle classes saving, loading, deleting, etc.
     def _setup_classes_panel(self):
-        # Clear existing widgets
         for widget in self.center_frame.winfo_children():
             widget.destroy()
 
-        # Outer container to place 1/4 of height from the top of the frame
-        container = ttk.Frame(self.center_frame)
-        container.pack(pady=int(self.root.winfo_height() * 0.10))
-
-        # Heading
-        ttk.Label(container, text="Setup Class Roster", font=("Segoe UI", 14, "bold")).pack(pady=(0, 20))
-
-        directions = (
-            "Local classes use CSV or Excel roster files. Select a local class to add or remove students."
-            if not self.google_sheets_enabled_var.get()
-            else "Local classes remain editable here. For Google classes, edit student names in column A of the mapped tab, then refresh rosters."
+        scroll = AutoScrollableFrame(self.center_frame)
+        scroll.pack(fill="both", expand=True)
+        container = scroll.content
+        ttk.Label(container, text="Set-up Classes", font=("Segoe UI", 16, "bold")).pack(pady=(18, 10))
+        ttk.Button(container, text="How to Setup Classes", command=self._show_setup_classes_help).pack(
+            fill="x", padx=18, pady=(0, 14)
         )
-        ttk.Label(container, text=directions, wraplength=350, justify="left").pack(fill="x", pady=(0, 8))
 
-        #Help Button
-        ttk.Button(container, text="How to Setup Classes", command=self._show_setup_classes_help).pack(fill="x", pady=15)
-        
-        # Add/Delete buttons
-        ttk.Button(container, text="Add Local Class", command=self._add_class).pack(fill="x", pady=5)
-        if self.google_sheets_enabled_var.get():
-            ttk.Button(container, text="Add Google Sheets Class", command=self._add_google_class).pack(fill="x", pady=5)
-        ttk.Button(container, text="Add or Remove Students", command=self._edit_class_students).pack(fill="x", pady=5)
-        ttk.Button(container, text="Delete Class", command=self._delete_class).pack(fill="x", pady=5)
+        ttk.Separator(container, orient="horizontal").pack(fill="x", padx=18, pady=(0, 14))
+        ttk.Label(container, text="Google Sheet Roster Management", style="Header.TLabel").pack(
+            anchor="w", padx=18
+        )
+        ttk.Label(
+            container,
+            text=(
+                "Recommended: keep class rosters and grades in Google Sheets. Use the "
+                "'Set-up Google Sheets' button under Preferences to connect or create your gradebook. "
+                "Add and remove students in the linked Google roster file, then refresh rosters here."
+            ),
+            wraplength=410,
+            justify="left",
+        ).pack(fill="x", padx=18, pady=(5, 8))
+        self.google_class_add_button = ttk.Button(
+            container, text="Add Google Sheets Class", command=self._add_google_class
+        )
+        self.google_class_add_button.pack(fill="x", padx=18, pady=3)
+        self.google_classes_refresh_button = ttk.Button(
+            container,
+            text="Refresh Rosters",
+            command=lambda: self._refresh_google_rosters(background=True, notify=True),
+        )
+        self.google_classes_refresh_button.pack(fill="x", padx=18, pady=3)
+        self.google_classes_open_button = ttk.Button(
+            container, text="Open Google Sheets File in Browser", command=self._open_google_gradebook
+        )
+        self.google_classes_open_button.pack(fill="x", padx=18, pady=3)
+        google_ready = self.google_sheets_enabled_var.get() and bool(self.google_spreadsheet_id)
+        if not google_ready:
+            self.google_class_add_button.state(["disabled"])
+            self.google_classes_refresh_button.state(["disabled"])
+            self.google_classes_open_button.state(["disabled"])
 
-        # ---- NEW: show class list in right panel ----
+        ttk.Separator(container, orient="horizontal").pack(fill="x", padx=18, pady=14)
+        ttk.Label(container, text="Manage Classes Locally", style="Header.TLabel").pack(anchor="w", padx=18)
+        ttk.Label(
+            container,
+            text=(
+                "Use these settings if you want to keep student rosters and grades on this computer "
+                "instead of Google Sheets."
+            ),
+            wraplength=410,
+            justify="left",
+        ).pack(fill="x", padx=18, pady=(5, 6))
+        ttk.Checkbutton(
+            container,
+            text="Allow the program to manage the gradebook locally",
+            variable=self.enable_gradebook_var,
+            command=self.save_settings,
+        ).pack(anchor="w", padx=18, pady=(2, 2))
+        ttk.Label(
+            container,
+            text="When enabled, quiz results can be added to a persistent local gradebook for each roster.",
+            wraplength=410,
+            justify="left",
+        ).pack(fill="x", padx=36, pady=(0, 8))
+        ttk.Button(container, text="Add Local Class", command=self._add_class).pack(fill="x", padx=18, pady=3)
+        ttk.Button(container, text="Add or Remove Students", command=self._edit_class_students).pack(
+            fill="x", padx=18, pady=3
+        )
+        ttk.Button(container, text="Open Local Gradebook", command=self._open_selected_local_gradebook).pack(
+            fill="x", padx=18, pady=3
+        )
+        ttk.Label(
+            container,
+            text="Warning: edits made in the opened file permanently change the gradebook used by the program.",
+            foreground="#a33a00",
+            wraplength=410,
+            justify="left",
+        ).pack(fill="x", padx=18, pady=(3, 8))
+
         self._show_class_list_panel()
-        
 
-      
-        # Horizontal line
-        ttk.Separator(container, orient="horizontal").pack(fill="x", pady=(15, 5))
-        
-        # Button to return to original center panel
-        ttk.Button(container, text="Home", command=lambda: self.reset_panels()).pack(fill="x", pady=8)
+        ttk.Separator(container, orient="horizontal").pack(fill="x", padx=18, pady=(16, 10))
+        ttk.Button(container, text="Delete Class", command=self._delete_class).pack(fill="x", padx=18, pady=3)
+        ttk.Separator(container, orient="horizontal").pack(fill="x", padx=18, pady=12)
+        ttk.Button(container, text="Home", command=self.reset_panels).pack(fill="x", padx=18, pady=(0, 18))
+
+    def _open_selected_local_gradebook(self):
+        """Open the local gradebook belonging to the selected local class."""
+        if not hasattr(self, "class_tree") or not self.class_tree.selection():
+            messagebox.showinfo("No Selection", "Select a local class in the right pane first.")
+            return
+        class_name = str(self.class_tree.item(self.class_tree.selection()[0], "values")[0])
+        class_info = self.classes.get(class_name, {})
+        if isinstance(class_info, dict) and class_info.get("source") == "google_sheet":
+            messagebox.showinfo(
+                "Google Sheets Class",
+                "This class is managed in Google Sheets. Use 'Open Google Sheets File in Browser' instead.",
+            )
+            return
+        self.full_gradebook_path = os.path.join(os.getcwd(), f"{class_name.replace(' ', '_')}_gradebook.csv")
+        self._show_gradebook_popup(
+            additional_text=f"This opens the permanent local gradebook for {class_name}."
+        )
 
 
     def _add_class(self):
@@ -1686,13 +1858,8 @@ class QuizAppGUI:
         popup.transient(self.root)  # Keep above main window
         popup.grab_set()  # Make modal
 
-        # Calculate position: centered horizontally, 1/4 down vertically
-        screen_w = self.root.winfo_screenwidth()
-        screen_h = self.root.winfo_screenheight()
         width, height = 500, 200
-        x = (screen_w - width) // 2
-        y = screen_h // 4
-        popup.geometry(f"{width}x{height}+{x}+{y}")
+        self._position_popup(popup, width, height)
 
         # Heading
         ttk.Label(popup, text="Add Class to Program", font=("Segoe UI", 14, "bold")).pack(pady=(10, 10))
@@ -1787,7 +1954,7 @@ class QuizAppGUI:
         popup.title("Add Google Sheets Class")
         popup.transient(self.root)
         popup.grab_set()
-        popup.geometry("520x220")
+        self._position_popup(popup, 520, 220)
         frame = ttk.Frame(popup, padding=18)
         frame.pack(fill="both", expand=True)
         ttk.Label(frame, text="Course name:").grid(row=0, column=0, sticky="w", pady=7)
@@ -1947,7 +2114,7 @@ class QuizAppGUI:
         popup.title(f"Edit Students: {class_name}")
         popup.transient(self.root)
         popup.grab_set()
-        popup.geometry("400x250+{}+{}".format(self.root.winfo_screenwidth()//2 - 200, self.root.winfo_screenheight()//4))
+        self._position_popup(popup, 400, 250)
 
         # Directions
         ttk.Label(popup, text="Your class roster will open now.\n"
@@ -2022,13 +2189,8 @@ class QuizAppGUI:
         popup.transient(self.root)
         popup.grab_set()
 
-        # Center window: horizontally centered, 1/4 down vertically
-        screen_w = self.root.winfo_screenwidth()
-        screen_h = self.root.winfo_screenheight()
         width, height = 400, 150
-        x = (screen_w - width) // 2
-        y = screen_h // 4
-        popup.geometry(f"{width}x{height}+{x}+{y}")
+        self._position_popup(popup, width, height)
 
         # Confirmation message
         if isinstance(class_info, dict) and class_info.get("source") == "google_sheet":
@@ -2081,11 +2243,7 @@ class QuizAppGUI:
         # Set window width to image width and reasonable height
         win_width = min(img.width+40, 950)
         win_height = min(img.height + 400, 1000)
-        help_window.geometry(
-            f"{win_width}x{win_height}+"
-            f"{int((help_window.winfo_screenwidth()-win_width)/2)}+"
-            f"{int(help_window.winfo_screenheight()/30)}"
-        )
+        self._position_popup(help_window, win_width, win_height)
 
         # Create canvas + scrollbar
         canvas = tk.Canvas(help_window, width=win_width, height=win_height)
@@ -2205,7 +2363,7 @@ class QuizAppGUI:
         # Window size
         win_width = img.width
         win_height = min(img.height + 400, 800)
-        help_window.geometry(f"{win_width}x{win_height}+{int((help_window.winfo_screenwidth()-win_width)/2)}+{int(help_window.winfo_screenheight()/8)}")
+        self._position_popup(help_window, win_width, win_height)
 
         # Canvas and scrollbar
         canvas = tk.Canvas(help_window, width=win_width, height=win_height)
@@ -2297,7 +2455,7 @@ class QuizAppGUI:
         
         popup = tk.Toplevel(self.root)
         popup.title("New Grade Scale")
-        popup.geometry("400x600+{}+{}".format(self.root.winfo_screenwidth()//2 - 200, self.root.winfo_screenheight()//4))
+        self._position_popup(popup, 400, 600)
         popup.transient(self.root)
         popup.grab_set()
 
@@ -2509,7 +2667,7 @@ class QuizAppGUI:
         popup.title("Google Sheets Safety Warning")
         popup.transient(self.root)
         popup.grab_set()
-        popup.geometry("560x230")
+        self._position_popup(popup, 560, 230)
         ttk.Label(
             popup,
             text=("Do not make any changes to the Google file while data is being extracted and updated. "
@@ -4094,7 +4252,7 @@ class QuizAppGUI:
         """Pop-up after gradebook update with option to open the gradebook."""
         popup = tk.Toplevel(self.root)
         popup.title("Open Local Gradebook")
-        popup.geometry("350x350")
+        self._position_popup(popup, 350, 350)
         popup.grab_set()  # make modal
         
         update_text = additional_text
@@ -4465,7 +4623,7 @@ class QuizAppGUI:
 
             confirm_popup = tk.Toplevel(self.root)
             confirm_popup.title("Confirm Delete")
-            confirm_popup.geometry("400x150")
+            self._position_popup(confirm_popup, 400, 150)
             confirm_popup.grab_set()  # modal
 
             ttk.Label(confirm_popup, text="Please confirm you want to delete the gradebook from the program.",
@@ -4577,7 +4735,7 @@ class QuizAppGUI:
         # Create preview window
         win = tk.Toplevel(self.root)
         win.title(f"Preview: {class_name}")
-        win.geometry(f"300x500+{int(self.root.winfo_screenwidth()/2 - 100)}+{int(self.root.winfo_screenheight()/4)}")
+        self._position_popup(win, 300, 500)
 
         # Treeview for student names
         tree_frame = ttk.Frame(win)
@@ -4694,12 +4852,14 @@ class QuizAppGUI:
                 )
                 self.grading_tree.insert("", "end", values=(name, score_str))
 
-    def _display_pdf_first_page(self):
+    def _display_pdf_first_page(self, requested_path=None):
         """Display the first page of the selected PDF as a scaled image on the right frame, 
         with live resize support that preserves calibration scaling."""
-        pdf_path = self.pdf_path_var.get()
+        pdf_path = requested_path or self.pdf_path_var.get()
+        if requested_path and self.pdf_preview_request != requested_path:
+            return
         if not pdf_path or not os.path.exists(pdf_path):
-            ttk.Label(self.right_frame, text="No PDF selected.", foreground="red").pack(pady=20)
+            self._show_pdf_preview_error(pdf_path, "The selected PDF could not be found.")
             return
 
         try:
@@ -4713,17 +4873,25 @@ class QuizAppGUI:
             )
             first_page = pages[0]
             self.right_full_image = first_page  # full-res reference
+            self._stop_pdf_preview_animation()
 
             # --- Clear frame and prepare canvas ---
             for widget in self.right_frame.winfo_children():
                 widget.destroy()
+            ttk.Label(
+                self.right_frame,
+                text="Displaying Page 1 of PDF",
+                style="Header.TLabel",
+            ).pack(pady=(0, 8))
+            preview_frame = ttk.Frame(self.right_frame)
+            preview_frame.pack(fill="both", expand=True)
 
             # --- Initial scaled render ---
-            resized, scale = self._resize_image_to_fit(self.right_full_image, self.right_frame)
+            resized, scale = self._resize_image_to_fit(self.right_full_image, preview_frame)
             self.image_scale = scale
 
             photo = ImageTk.PhotoImage(resized)
-            canvas = tk.Canvas(self.right_frame, width=resized.width, height=resized.height, bg=self.bg_color)
+            canvas = tk.Canvas(preview_frame, width=resized.width, height=resized.height, bg=self.bg_color)
             canvas.pack(fill="both", expand=True)
             canvas.create_image(0, 0, anchor="nw", image=photo)
             canvas.photo = photo  # prevent garbage collection
@@ -4738,7 +4906,7 @@ class QuizAppGUI:
                 if not hasattr(self, "right_full_image") or not hasattr(self, "right_canvas"):
                     return
                 try:
-                    resized_img, new_scale = self._resize_image_to_fit(self.right_full_image, self.right_frame)
+                    resized_img, new_scale = self._resize_image_to_fit(self.right_full_image, preview_frame)
                     self.image_scale = new_scale
                     new_photo = ImageTk.PhotoImage(resized_img)
                     self.right_canvas.delete("all")
@@ -4747,10 +4915,10 @@ class QuizAppGUI:
                 except Exception:
                     pass  # silently ignore if frame destroyed during resize
 
-            self.right_frame.bind("<Configure>", lambda e: self._debounce(debounced_resize, 150, e))
+            preview_frame.bind("<Configure>", lambda e: self._debounce(debounced_resize, 150, e))
 
         except Exception as e:
-            ttk.Label(self.right_frame, text=f"Error loading PDF:\n{e}", foreground="red").pack(pady=20)
+            self._show_pdf_preview_error(pdf_path, e)
 
 
     def _enable_box_drawing(self, canvas, topic_name=None, color=None):
@@ -5054,7 +5222,7 @@ class QuizAppGUI:
         popup.title("Connect Google Sheets")
         popup.transient(self.root)
         popup.grab_set()
-        popup.geometry("720x270")
+        self._position_popup(popup, 720, 270)
         ttk.Label(
             popup,
             text=("A browser window should open for Google authorization. If your browser window doesn't open, "
@@ -5100,7 +5268,7 @@ class QuizAppGUI:
     def _finish_google_authorization(self, popup, status_var):
         self._stop_google_status_animation()
         self.google_session_connected = True
-        self.google_connection_status_var.set("Google Sheets: Connected")
+        self.google_connection_status_var.set(GOOGLE_CONNECTED_STATUS)
         self._update_google_controls_visibility()
         if hasattr(self, "google_authorize_button") and self.google_authorize_button.winfo_exists():
             self.google_authorize_button.configure(text="Reconnect / Change Google Account")
@@ -5152,7 +5320,7 @@ class QuizAppGUI:
     def _google_startup_success(self, title):
         self._stop_google_status_animation()
         self.google_session_connected = True
-        self.google_connection_status_var.set("Google Sheets: Connected")
+        self.google_connection_status_var.set(GOOGLE_CONNECTED_STATUS)
         self._update_google_controls_visibility()
         if hasattr(self, "google_authorize_button") and self.google_authorize_button.winfo_exists():
             self.google_authorize_button.configure(text="Reconnect / Change Google Account")
@@ -5195,7 +5363,7 @@ class QuizAppGUI:
         popup.title("About Google Sheets Integration")
         popup.transient(self.root)
         popup.grab_set()
-        popup.geometry("650x760")
+        self._position_popup(popup, 650, 760)
         ttk.Label(
             popup,
             text=("When you integrate with google sheets, you will manage all rosters through your own google sheet. "
@@ -5294,7 +5462,7 @@ class QuizAppGUI:
             previous_id = self.google_spreadsheet_id
             self.google_spreadsheet_id = spreadsheet.id
             self.google_sheet_title_var.set(title)
-            self.google_connection_status_var.set("Google Sheets: Connected")
+            self.google_connection_status_var.set(GOOGLE_CONNECTED_STATUS)
             for class_info in self.classes.values():
                 if isinstance(class_info, dict) and class_info.get("source") == "google_sheet":
                     if class_info.get("spreadsheet_id") == previous_id:
@@ -5342,7 +5510,10 @@ class QuizAppGUI:
         ]
 
         sample = spreadsheet.add_worksheet(
-            title="SAMPLE", rows=row_count, cols=column_count, index=1
+            title="SAMPLE",
+            rows=row_count,
+            cols=max(column_count, SAMPLE_GOOGLE_SHEET_COLUMNS),
+            index=1,
         )
         sample.update(values=values, range_name="A1", value_input_option="RAW")
 
@@ -5431,7 +5602,7 @@ class QuizAppGUI:
         popup = tk.Toplevel(self.root)
         popup.title("About Google Sheets")
         popup.transient(self.root)
-        popup.geometry("700x820")
+        self._position_popup(popup, 700, 820)
         ttk.Label(popup, text="Google Sheets Gradebook Setup", font=("Segoe UI", 16, "bold")).pack(pady=10)
         if created:
             ttk.Label(popup, text=f"Created: {self.google_sheet_title_var.get()}", style="Bold.TLabel").pack()
@@ -5565,6 +5736,12 @@ class QuizAppGUI:
                 return False
             header_lookup = {value.strip().casefold(): index + 1 for index, value in enumerate(headers) if value.strip()}
             topic_names = [value.get().strip() for value in self.topic_vars if value.get().strip()]
+            new_topic_count = sum(topic.casefold() not in header_lookup for topic in topic_names)
+            ensure_worksheet_size(
+                worksheet,
+                required_rows=max(len(names) + 1, 1),
+                required_columns=len(headers) + new_topic_count,
+            )
             for topic in topic_names:
                 key = topic.casefold()
                 if key not in header_lookup:
@@ -5618,7 +5795,7 @@ class QuizAppGUI:
         """Pop-up after gradebook update with option to open it."""
         popup = tk.Toplevel(self.root)
         popup.title("Google Sheets Updated")
-        popup.geometry("430x190")
+        self._position_popup(popup, 430, 190)
         popup.grab_set()  # make it modal
 
         ttk.Label(
