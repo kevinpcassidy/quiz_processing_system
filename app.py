@@ -34,7 +34,7 @@ SAMPLE_WORKBOOK = os.path.join("reference", "SAMPLE.xlsx")
 SAMPLE_PDF = os.path.join("reference", "SAMPLE.pdf")
 SAMPLE_GRADING_SCALE = [5, 6, 7, 8, 9, 10]
 SAMPLE_GOOGLE_SHEET_COLUMNS = 13
-GOOGLE_CONNECTED_STATUS = "✅ Google Sheets: Connected"
+GOOGLE_CONNECTED_STATUS = "Google Sheets: Connected"
 
 # These globals are populated by the staged dependency worker after Tk has
 # displayed the main window. Keeping the names stable avoids spreading import
@@ -224,6 +224,11 @@ def ensure_worksheet_size(worksheet, required_rows=None, required_columns=None):
     columns = max(current_columns, int(required_columns or 0))
     if rows > current_rows or columns > current_columns:
         worksheet.resize(rows=rows or None, cols=columns or None)
+
+
+def google_connection_is_connected(status):
+    """Return whether a Google connection status represents confirmed success."""
+    return str(status).strip() == GOOGLE_CONNECTED_STATUS
 
 
 def format_local_timestamp(iso_timestamp):
@@ -452,6 +457,9 @@ class QuizAppGUI:
         self.enable_gradebook_var = tk.BooleanVar(value=False)
         self.google_sheets_enabled_var = tk.BooleanVar(value=False)
         self.google_connection_status_var = tk.StringVar(value="Google Sheets: Not Enabled")
+        self.google_connection_icon_var = tk.StringVar(value="○")
+        self.google_connection_icon_labels = []
+        self.google_connection_status_var.trace_add("write", self._refresh_google_connection_indicators)
         self.google_sheet_title_var = tk.StringVar(value="None created")
         self.google_roster_status_var = tk.StringVar(value="Rosters have not been updated yet.")
         self.show_google_extraction_warning_var = tk.BooleanVar(value=True)
@@ -519,6 +527,35 @@ class QuizAppGUI:
  
   
     # ---------------- UTILITY ----------------
+    def _build_google_connection_status(self, parent, wraplength):
+        """Build a noninteractive connection indicator matching workflow status icons."""
+        frame = ttk.Frame(parent)
+        icon = ttk.Label(frame, textvariable=self.google_connection_icon_var, width=2, anchor="center")
+        icon.pack(side="left", anchor="n")
+        ttk.Label(
+            frame,
+            textvariable=self.google_connection_status_var,
+            wraplength=wraplength,
+            justify="left",
+        ).pack(side="left", fill="x", expand=True)
+        self.google_connection_icon_labels.append(icon)
+        self._refresh_google_connection_indicators()
+        return frame
+
+    def _refresh_google_connection_indicators(self, *_args):
+        """Show a green workflow check only for a confirmed Google connection."""
+        connected = google_connection_is_connected(self.google_connection_status_var.get())
+        self.google_connection_icon_var.set("✔" if connected else "○")
+        live_labels = []
+        for label in self.google_connection_icon_labels:
+            try:
+                if label.winfo_exists():
+                    label.configure(style="ProgressCheck.TLabel" if connected else "TLabel")
+                    live_labels.append(label)
+            except tk.TclError:
+                pass
+        self.google_connection_icon_labels = live_labels
+
     def _position_popup(self, popup, width=None, height=None):
         """Place an app-owned popup relative to the main window's current monitor."""
         def apply_position():
@@ -971,11 +1008,9 @@ class QuizAppGUI:
         # Preferences section
         ttk.Separator(self.left_frame, orient="horizontal").pack(fill="x", pady=(10,8))
         ttk.Label(self.left_frame, text="Preferences", style="Header.TLabel").pack(anchor="w", pady=(0,6))
-        ttk.Label(
-            self.left_frame,
-            textvariable=self.google_connection_status_var,
-            wraplength=300,
-        ).pack(anchor="w", pady=(0, 2))
+        self._build_google_connection_status(self.left_frame, 275).pack(
+            fill="x", anchor="w", pady=(0, 2)
+        )
         ttk.Button(
             self.left_frame,
             text="Set-up Google Sheets",
@@ -1604,7 +1639,7 @@ class QuizAppGUI:
         ).pack(anchor="w", padx=18, pady=(5, 3))
         self.google_controls_frame = ttk.Frame(parent)
         self.google_controls_frame.pack(fill="x", padx=18)
-        ttk.Label(self.google_controls_frame, textvariable=self.google_connection_status_var, wraplength=400).pack(anchor="w")
+        self._build_google_connection_status(self.google_controls_frame, 375).pack(fill="x", anchor="w")
         ttk.Label(self.google_controls_frame, textvariable=self.google_sheet_title_var, wraplength=400).pack(anchor="w", pady=(0, 4))
         ttk.Label(self.google_controls_frame, textvariable=self.google_roster_status_var, wraplength=400).pack(anchor="w", pady=(0, 4))
         self.google_authorization_help_var = tk.StringVar(

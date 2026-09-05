@@ -18,6 +18,7 @@ helper_names = {
     "excel_sheet_title",
     "ensure_worksheet_size",
     "format_google_progress_status",
+    "google_connection_is_connected",
     "format_local_timestamp",
     "install_sample_grading_scale",
     "normalize_score_row",
@@ -55,6 +56,7 @@ namespace = {
         os.path.join("vendor", "poppler", "Library", "bin", "pdftoppm.exe"),
     ),
     "GITHUB_RELEASES_URL": "https://github.com/kevinpcassidy/quiz_processing_system/releases",
+    "GOOGLE_CONNECTED_STATUS": "Google Sheets: Connected",
     "SAMPLE_GRADING_SCALE": [5, 6, 7, 8, 9, 10],
 }
 exec(compile(ast.Module(body=wanted, type_ignores=[]), "app.py", "exec"), namespace)
@@ -63,6 +65,7 @@ excel_sheet_title = namespace["excel_sheet_title"]
 ensure_worksheet_size = namespace["ensure_worksheet_size"]
 format_local_timestamp = namespace["format_local_timestamp"]
 format_google_progress_status = namespace["format_google_progress_status"]
+google_connection_is_connected = namespace["google_connection_is_connected"]
 install_sample_grading_scale = namespace["install_sample_grading_scale"]
 normalize_score_row = namespace["normalize_score_row"]
 normalize_score_value = namespace["normalize_score_value"]
@@ -79,6 +82,16 @@ configure_pdf2image = namespace["configure_pdf2image"]
 
 
 class GoogleHelperTests(unittest.TestCase):
+    def test_google_connection_check_only_appears_for_confirmed_success(self):
+        self.assertTrue(google_connection_is_connected("Google Sheets: Connected"))
+        for status in (
+            "Google Sheets: Not Enabled",
+            "Google Sheets: Not Connected",
+            "Google Sheets: Connecting...",
+            "Google Sheets: Reconnection required",
+        ):
+            self.assertFalse(google_connection_is_connected(status))
+
     def test_resource_root_uses_pyinstaller_directory_when_frozen(self):
         old_frozen = getattr(sys, "frozen", None)
         old_meipass = getattr(sys, "_MEIPASS", None)
