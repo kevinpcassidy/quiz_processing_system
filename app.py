@@ -14,6 +14,7 @@ import time
 import webbrowser
 import subprocess, platform
 import threading
+import math
 from datetime import datetime, timezone
 from urllib.parse import quote
 from urllib.request import Request as UrlRequest, urlopen
@@ -35,6 +36,51 @@ SAMPLE_PDF = os.path.join("reference", "SAMPLE.pdf")
 SAMPLE_GRADING_SCALE = [5, 6, 7, 8, 9, 10]
 SAMPLE_GOOGLE_SHEET_COLUMNS = 13
 GOOGLE_CONNECTED_STATUS = "Google Sheets: Connected"
+
+
+def display_rectangle_to_source(coordinates, source_size, displayed_size):
+    """Convert a display rectangle to a clamped, non-contracting source box.
+
+    Minimum edges use floor and maximum edges use ceil because Pillow crop boxes
+    exclude their right and bottom coordinates.
+    """
+    source_width, source_height = source_size
+    displayed_width, displayed_height = displayed_size
+    if displayed_width <= 0 or displayed_height <= 0:
+        raise ValueError("Displayed image dimensions must be positive")
+
+    x0, y0, x1, y1 = coordinates
+    left, right = sorted((x0, x1))
+    top, bottom = sorted((y0, y1))
+    scale_x = source_width / displayed_width
+    scale_y = source_height / displayed_height
+    return (
+        max(0, min(source_width, math.floor(left * scale_x))),
+        max(0, min(source_height, math.floor(top * scale_y))),
+        max(0, min(source_width, math.ceil(right * scale_x))),
+        max(0, min(source_height, math.ceil(bottom * scale_y))),
+    )
+
+
+def display_x_to_source(x_coordinate, source_width, displayed_width):
+    """Convert an X coordinate using the dimensions of its own displayed image."""
+    if displayed_width <= 0:
+        raise ValueError("Displayed image width must be positive")
+    return max(0, min(source_width, int(x_coordinate * source_width / displayed_width)))
+
+
+def fit_size_to_viewport(image_size, viewport_size):
+    """Return integer image dimensions that fit completely inside a viewport."""
+    image_width, image_height = image_size
+    viewport_width, viewport_height = viewport_size
+    if min(image_width, image_height, viewport_width, viewport_height) <= 0:
+        raise ValueError("Image and viewport dimensions must be positive")
+
+    scale = min(viewport_width / image_width, viewport_height / image_height)
+    return (
+        max(1, min(viewport_width, int(image_width * scale))),
+        max(1, min(viewport_height, int(image_height * scale))),
+    )
 
 # These globals are populated by the staged dependency worker after Tk has
 # displayed the main window. Keeping the names stable avoids spreading import
@@ -2957,24 +3003,35 @@ class QuizAppGUI:
         pil_crop = self.right_full_image.crop((x0, y0, x1, y1))
 
         # --- Canvas setup ---
-        self.right_canvas = tk.Canvas(self.right_frame, bg=self.bg_color)
+        self.right_canvas = tk.Canvas(
+            self.right_frame,
+            bg=self.bg_color,
+            borderwidth=0,
+            highlightthickness=0,
+        )
         self.right_canvas.pack(fill="both", expand=True)
+        score_canvas = self.right_canvas
         self.right_photo = None
         self.score_coords = []       # original cropped-image x positions
         self.score_lines = []        # canvas line IDs
         self.score_labels_drawn = [] # canvas label IDs
 
         # --- Function to redraw image + overlays ---
-        def redraw_canvas(widget, scale):
+        def redraw_canvas(widget, viewport_size=None):
             widget.delete("all")
-            resized, _ = self._resize_image_to_fit(pil_crop, self.right_frame)
+            if viewport_size is None:
+                widget.update_idletasks()
+                viewport_size = (widget.winfo_width(), widget.winfo_height())
+            resized_size = fit_size_to_viewport(pil_crop.size, viewport_size)
+            resized = pil_crop.resize(resized_size)
+            self.score_crop_display_size = resized.size
             self.right_photo = ImageTk.PhotoImage(resized)
             widget.create_image(0, 0, anchor="nw", image=self.right_photo)
-            self.image_scale = scale
+            scale_x = resized.width / pil_crop.width
 
             # redraw clicked red lines and labels proportionally
             for i, orig_x in enumerate(self.score_coords):
-                x_display = int(orig_x * scale)
+                x_display = int(orig_x * scale_x)
                 line = widget.create_line(x_display, 0, x_display, resized.height, fill='red', width=1)
                 label_text = str(score_labels[i])
                 label = widget.create_text(
@@ -2989,22 +3046,23 @@ class QuizAppGUI:
                 self.score_labels_drawn[i] = label
 
         # --- Initial display ---
-        initial_resized, initial_scale = self._resize_image_to_fit(pil_crop, self.right_frame)
-        redraw_canvas(self.right_canvas, initial_scale)
+        redraw_canvas(self.right_canvas)
 
         # --- Click logic ---
         def on_click(event):
             if len(self.score_coords) >= len(score_labels):
                 return
             x_display = self.right_canvas.canvasx(event.x)
-            x_original = int(x_display / self.image_scale)
+            x_original = display_x_to_source(
+                x_display, pil_crop.width, self.score_crop_display_size[0]
+            )
             self.score_coords.append(x_original)
 
             # append placeholders for line/label IDs
             self.score_lines.append(None)
             self.score_labels_drawn.append(None)
 
-            redraw_canvas(self.right_canvas, self.image_scale)
+            redraw_canvas(self.right_canvas)
             clicked_count_var.set(f"Clicked: {len(self.score_coords)} / {len(score_labels)}")
             if len(self.score_coords) >= len(score_labels):
                 next_btn.config(state='normal')
@@ -3021,7 +3079,7 @@ class QuizAppGUI:
             self.score_labels_drawn.clear()
             clicked_count_var.set(f"Clicked: 0 / {len(score_labels)}")
             next_btn.config(state='disabled')
-            redraw_canvas(self.right_canvas, self.image_scale)
+            redraw_canvas(self.right_canvas)
 
         reset_btn = ttk.Button(btn_frame, text="Reset", command=reset_clicks)
         reset_btn.pack(side="left", padx=4)
@@ -3037,14 +3095,24 @@ class QuizAppGUI:
         next_btn = ttk.Button(btn_frame, text="Next", state='disabled', command=next_topic)
         next_btn.pack(side="left", padx=4)
 
-        # --- Bind resize event with overlays ---
-        self._bind_resize_event(
-            pil_crop,
-            self.right_frame,
-            self.right_canvas,
-            is_center=True,
-            redraw_overlays=lambda widget, scale: redraw_canvas(widget, scale)
-        )
+        # Fit against the canvas's drawable area, not its larger parent frame.
+        resize_job = None
+
+        def on_score_canvas_resize(event):
+            nonlocal resize_job
+            if resize_job is not None:
+                score_canvas.after_cancel(resize_job)
+            viewport_size = (event.width, event.height)
+
+            def finish_resize():
+                nonlocal resize_job
+                resize_job = None
+                if score_canvas.winfo_exists():
+                    redraw_canvas(score_canvas, viewport_size)
+
+            resize_job = score_canvas.after(100, finish_resize)
+
+        score_canvas.bind("<Configure>", on_score_canvas_resize)
 
     def _prompt_page_side_calibration(self, topic_index=0):
         """
@@ -4920,10 +4988,12 @@ class QuizAppGUI:
             ).pack(pady=(0, 8))
             preview_frame = ttk.Frame(self.right_frame)
             preview_frame.pack(fill="both", expand=True)
+            self.full_page_preview_frame = preview_frame
 
             # --- Initial scaled render ---
             resized, scale = self._resize_image_to_fit(self.right_full_image, preview_frame)
             self.image_scale = scale
+            self.full_page_display_size = resized.size
 
             photo = ImageTk.PhotoImage(resized)
             canvas = tk.Canvas(preview_frame, width=resized.width, height=resized.height, bg=self.bg_color)
@@ -4943,10 +5013,11 @@ class QuizAppGUI:
                 try:
                     resized_img, new_scale = self._resize_image_to_fit(self.right_full_image, preview_frame)
                     self.image_scale = new_scale
+                    self.full_page_display_size = resized_img.size
                     new_photo = ImageTk.PhotoImage(resized_img)
-                    self.right_canvas.delete("all")
-                    self.right_canvas.create_image(0, 0, anchor="nw", image=new_photo)
-                    self.right_canvas.photo = new_photo
+                    canvas.delete("all")
+                    canvas.create_image(0, 0, anchor="nw", image=new_photo)
+                    canvas.photo = new_photo
                 except Exception:
                     pass  # silently ignore if frame destroyed during resize
 
@@ -5026,13 +5097,11 @@ class QuizAppGUI:
                 return
             x0, y0 = box_info['start']
             x1, y1 = canvas.canvasx(event.x), canvas.canvasy(event.y)
-            coords = (int(min(x0, x1)), int(min(y0, y1)), int(max(x0, x1)), int(max(y0, y1)))
-
-            scale_canvas = getattr(self, "image_scale", 1.0) or 1.0
-            x0_full = int(coords[0] / scale_canvas)
-            y0_full = int(coords[1] / scale_canvas)
-            x1_full = int(coords[2] / scale_canvas)
-            y1_full = int(coords[3] / scale_canvas)
+            coords = (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))
+            source_coords = display_rectangle_to_source(
+                coords, self.right_full_image.size, self.full_page_display_size
+            )
+            x0_full, y0_full, x1_full, y1_full = source_coords
 
 
             # Store results
@@ -5067,7 +5136,12 @@ class QuizAppGUI:
 
             # Re-bind resize handler safely after drawing
             if self.right_full_image is not None and self.right_canvas is not None:
-                self._bind_resize_event(self.right_full_image, self.right_frame, self.right_canvas)
+                self._bind_resize_event(
+                    self.right_full_image,
+                    self.full_page_preview_frame,
+                    self.right_canvas,
+                    display_size_attr="full_page_display_size",
+                )
 
 
         # --- Bind mouse events ---
@@ -5093,13 +5167,16 @@ class QuizAppGUI:
         frame_h = frame.winfo_height() or 800
 
         img_w, img_h = pil_image.size
+        new_w, new_h = fit_size_to_viewport(
+            (img_w, img_h), (frame_w, frame_h)
+        )
         scale = min(frame_w / img_w, frame_h / img_h)
-        new_w, new_h = int(img_w * scale), int(img_h * scale)
 
         resized = pil_image.resize((new_w, new_h))
         return resized, scale
 
-    def _bind_resize_event(self, pil_image, frame, widget, is_center=False, redraw_overlays=None):
+    def _bind_resize_event(self, pil_image, frame, widget, is_center=False,
+                           redraw_overlays=None, display_size_attr=None):
         """
         Bind a resize event with debounce to dynamically resize a displayed image.
         Also rescales any drawn boxes or overlays on the canvas.
@@ -5110,6 +5187,7 @@ class QuizAppGUI:
             widget (tk.Canvas | ttk.Label): Widget displaying the image.
             is_center (bool): If True, updates self.image_scale for calibration clicks.
             redraw_overlays (callable): Optional function(widget, scale) to redraw extra overlays.
+            display_size_attr (str): Optional attribute receiving actual rendered dimensions.
         """
         resize_job = None  # holds ID of pending resize callback
 
@@ -5123,6 +5201,8 @@ class QuizAppGUI:
 
             try:
                 resized, scale = self._resize_image_to_fit(pil_image, frame)
+                if display_size_attr:
+                    setattr(self, display_size_attr, resized.size)
                 photo = ImageTk.PhotoImage(resized)
 
                 if isinstance(widget, tk.Canvas):
@@ -5137,8 +5217,10 @@ class QuizAppGUI:
                         if "name_box" in self.calibration_data and self.calibration_data["name_box"]:
                             nb = self.calibration_data["name_box"]
                             x0, y0, x1, y1 = nb
-                            x0_s, y0_s = int(x0 * scale), int(y0 * scale)
-                            x1_s, y1_s = int(x1 * scale), int(y1 * scale)
+                            scale_x = resized.width / pil_image.width
+                            scale_y = resized.height / pil_image.height
+                            x0_s, y0_s = int(x0 * scale_x), int(y0 * scale_y)
+                            x1_s, y1_s = int(x1 * scale_x), int(y1 * scale_y)
                             rect = widget.create_rectangle(x0_s, y0_s, x1_s, y1_s, outline="red", width=2)
                             label = widget.create_text((x0_s + x1_s)//2, y0_s - 10,
                                                        text="Name Box", fill="red",
@@ -5149,8 +5231,10 @@ class QuizAppGUI:
                         if "score_boxes" in self.calibration_data:
                             for topic, coords in self.calibration_data["score_boxes"].items():
                                 x0, y0, x1, y1 = coords
-                                x0_s, y0_s = int(x0 * scale), int(y0 * scale)
-                                x1_s, y1_s = int(x1 * scale), int(y1 * scale)
+                                scale_x = resized.width / pil_image.width
+                                scale_y = resized.height / pil_image.height
+                                x0_s, y0_s = int(x0 * scale_x), int(y0 * scale_y)
+                                x1_s, y1_s = int(x1 * scale_x), int(y1 * scale_y)
                                 rect = widget.create_rectangle(x0_s, y0_s, x1_s, y1_s, outline="green", width=2)
                                 label = widget.create_text((x0_s + x1_s)//2, y0_s - 10,
                                                            text=f"{topic} Score Area", fill="green",
