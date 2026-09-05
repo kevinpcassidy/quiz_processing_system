@@ -68,6 +68,20 @@ def display_x_to_source(x_coordinate, source_width, displayed_width):
         raise ValueError("Displayed image width must be positive")
     return max(0, min(source_width, int(x_coordinate * source_width / displayed_width)))
 
+
+def fit_size_to_viewport(image_size, viewport_size):
+    """Return integer image dimensions that fit completely inside a viewport."""
+    image_width, image_height = image_size
+    viewport_width, viewport_height = viewport_size
+    if min(image_width, image_height, viewport_width, viewport_height) <= 0:
+        raise ValueError("Image and viewport dimensions must be positive")
+
+    scale = min(viewport_width / image_width, viewport_height / image_height)
+    return (
+        max(1, min(viewport_width, int(image_width * scale))),
+        max(1, min(viewport_height, int(image_height * scale))),
+    )
+
 # These globals are populated by the staged dependency worker after Tk has
 # displayed the main window. Keeping the names stable avoids spreading import
 # plumbing throughout the existing processing code.
@@ -2989,17 +3003,27 @@ class QuizAppGUI:
         pil_crop = self.right_full_image.crop((x0, y0, x1, y1))
 
         # --- Canvas setup ---
-        self.right_canvas = tk.Canvas(self.right_frame, bg=self.bg_color)
+        self.right_canvas = tk.Canvas(
+            self.right_frame,
+            bg=self.bg_color,
+            borderwidth=0,
+            highlightthickness=0,
+        )
         self.right_canvas.pack(fill="both", expand=True)
+        score_canvas = self.right_canvas
         self.right_photo = None
         self.score_coords = []       # original cropped-image x positions
         self.score_lines = []        # canvas line IDs
         self.score_labels_drawn = [] # canvas label IDs
 
         # --- Function to redraw image + overlays ---
-        def redraw_canvas(widget):
+        def redraw_canvas(widget, viewport_size=None):
             widget.delete("all")
-            resized, _ = self._resize_image_to_fit(pil_crop, self.right_frame)
+            if viewport_size is None:
+                widget.update_idletasks()
+                viewport_size = (widget.winfo_width(), widget.winfo_height())
+            resized_size = fit_size_to_viewport(pil_crop.size, viewport_size)
+            resized = pil_crop.resize(resized_size)
             self.score_crop_display_size = resized.size
             self.right_photo = ImageTk.PhotoImage(resized)
             widget.create_image(0, 0, anchor="nw", image=self.right_photo)
@@ -3071,13 +3095,24 @@ class QuizAppGUI:
         next_btn = ttk.Button(btn_frame, text="Next", state='disabled', command=next_topic)
         next_btn.pack(side="left", padx=4)
 
-        # --- Bind resize event with overlays ---
-        self._bind_resize_event(
-            pil_crop,
-            self.right_frame,
-            self.right_canvas,
-            redraw_overlays=lambda widget, scale: redraw_canvas(widget)
-        )
+        # Fit against the canvas's drawable area, not its larger parent frame.
+        resize_job = None
+
+        def on_score_canvas_resize(event):
+            nonlocal resize_job
+            if resize_job is not None:
+                score_canvas.after_cancel(resize_job)
+            viewport_size = (event.width, event.height)
+
+            def finish_resize():
+                nonlocal resize_job
+                resize_job = None
+                if score_canvas.winfo_exists():
+                    redraw_canvas(score_canvas, viewport_size)
+
+            resize_job = score_canvas.after(100, finish_resize)
+
+        score_canvas.bind("<Configure>", on_score_canvas_resize)
 
     def _prompt_page_side_calibration(self, topic_index=0):
         """
@@ -5132,8 +5167,10 @@ class QuizAppGUI:
         frame_h = frame.winfo_height() or 800
 
         img_w, img_h = pil_image.size
+        new_w, new_h = fit_size_to_viewport(
+            (img_w, img_h), (frame_w, frame_h)
+        )
         scale = min(frame_w / img_w, frame_h / img_h)
-        new_w, new_h = int(img_w * scale), int(img_h * scale)
 
         resized = pil_image.resize((new_w, new_h))
         return resized, scale

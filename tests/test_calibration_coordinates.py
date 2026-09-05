@@ -6,7 +6,11 @@ from pathlib import Path
 
 source = Path("app.py").read_text(encoding="utf-8")
 module = ast.parse(source)
-helper_names = {"display_rectangle_to_source", "display_x_to_source"}
+helper_names = {
+    "display_rectangle_to_source",
+    "display_x_to_source",
+    "fit_size_to_viewport",
+}
 wanted = [
     node for node in module.body
     if isinstance(node, ast.FunctionDef) and node.name in helper_names
@@ -15,6 +19,7 @@ namespace = {"math": math}
 exec(compile(ast.Module(body=wanted, type_ignores=[]), "app.py", "exec"), namespace)
 display_rectangle_to_source = namespace["display_rectangle_to_source"]
 display_x_to_source = namespace["display_x_to_source"]
+fit_size_to_viewport = namespace["fit_size_to_viewport"]
 
 
 class CalibrationCoordinateTests(unittest.TestCase):
@@ -108,6 +113,30 @@ class CalibrationCoordinateTests(unittest.TestCase):
             display_rectangle_to_source((0, 0, 1, 1), (10, 10), (0, 10))
         with self.assertRaises(ValueError):
             display_x_to_source(1, 10, 0)
+
+    def test_wide_crop_fits_entirely_inside_canvas(self):
+        fitted_width, fitted_height = fit_size_to_viewport(
+            (1200, 180), (713, 140)
+        )
+
+        self.assertEqual((fitted_width, fitted_height), (713, 106))
+        self.assertLessEqual(fitted_width, 713)
+        self.assertLessEqual(fitted_height, 140)
+
+    def test_tall_crop_fits_entirely_inside_canvas(self):
+        fitted_width, fitted_height = fit_size_to_viewport(
+            (180, 1200), (713, 140)
+        )
+
+        self.assertEqual((fitted_width, fitted_height), (21, 140))
+
+    def test_fit_rejects_non_positive_dimensions(self):
+        for image_size, viewport_size in (
+            ((0, 10), (100, 100)),
+            ((10, 10), (0, 100)),
+        ):
+            with self.assertRaises(ValueError):
+                fit_size_to_viewport(image_size, viewport_size)
 
 
 if __name__ == "__main__":
