@@ -28,3 +28,4 @@ vendor/
 ~$SAMPLE.xlsx
 /build
 /dist
+/.venv311
