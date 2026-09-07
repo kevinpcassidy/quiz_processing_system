@@ -26,3 +26,5 @@ credentials.json
 vendor/
 ~$SAMPLE.xlsx
 ~$SAMPLE.xlsx
+/build
+/dist
