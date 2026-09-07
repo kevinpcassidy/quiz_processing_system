@@ -90,6 +90,15 @@ class CalibrationCoordinateTests(unittest.TestCase):
         self.assertEqual(full_page_x, 850)
         self.assertEqual(crop_x, 125)
 
+    def test_manual_score_click_uses_latest_rendered_width(self):
+        source_width = 400
+
+        before_resize = display_x_to_source(200, source_width, 800)
+        after_resize = display_x_to_source(200, source_width, 500)
+
+        self.assertEqual(before_resize, 100)
+        self.assertEqual(after_resize, 160)
+
     def test_crop_width_matches_stored_exclusive_boundaries(self):
         box = display_rectangle_to_source(
             (10.2, 20.4, 99.1, 149.2), (1700, 2200), (503, 651)

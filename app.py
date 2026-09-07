@@ -3878,17 +3878,56 @@ class QuizAppGUI:
             font=("Arial", 12)
         ).pack(pady=(0, 10))
 
-        # --- Display the cropped score image in the center frame ---
-        resized, scale = self._resize_image_to_fit(cropped_image, self.center_frame)
+        # --- Display the cropped score image in its own drawable viewport ---
+        self.center_frame.update_idletasks()
+        preview_width = max(1, self.center_frame.winfo_width())
+        preview_height = max(1, self.center_frame.winfo_height() // 3)
+        initial_size = fit_size_to_viewport(
+            cropped_image.size, (preview_width, preview_height)
+        )
+        score_preview = tk.Canvas(
+            self.center_frame,
+            height=initial_size[1],
+            bg=self.bg_color,
+            borderwidth=0,
+            highlightthickness=0,
+        )
+        score_preview.pack(fill="x", pady=10)
+        self.manual_score_display_size = initial_size
 
+        def redraw_score_preview(viewport_size):
+            if not score_preview.winfo_exists():
+                return
+            resized_size = fit_size_to_viewport(cropped_image.size, viewport_size)
+            resized = cropped_image.resize(resized_size)
+            self.manual_score_display_size = resized.size
+            self.manual_score_photo = ImageTk.PhotoImage(resized)
+            score_preview.delete("all")
+            score_preview.create_image(
+                0, 0, anchor="nw", image=self.manual_score_photo
+            )
 
-        img = ImageTk.PhotoImage(resized)
-        img_label = ttk.Label(self.center_frame, image=img)
-        img_label.image = img
-        img_label.pack(pady=10)
+        score_preview.update_idletasks()
+        redraw_score_preview(
+            (score_preview.winfo_width(), score_preview.winfo_height())
+        )
 
-        # Enable live resizing for the cropped score image
-        self._bind_resize_event(cropped_image, self.center_frame, img_label, is_center=True)
+        resize_job = None
+
+        def on_score_preview_resize(event):
+            nonlocal resize_job
+            if resize_job is not None:
+                score_preview.after_cancel(resize_job)
+            viewport_size = (event.width, event.height)
+
+            def finish_resize():
+                nonlocal resize_job
+                resize_job = None
+                redraw_score_preview(viewport_size)
+
+            resize_job = score_preview.after(100, finish_resize)
+
+        score_preview.bind("<Configure>", on_score_preview_resize)
 
 
         ttk.Label(
@@ -3902,13 +3941,14 @@ class QuizAppGUI:
         entry.pack(pady=5)
 
         def on_click(event):
-            # Get display image width (cropped, resized) and actual cropped image width
-            display_w = img.width()  # width of what user clicks on (PhotoImage)
-            orig_w, orig_h = cropped_image.size  # actual size of cropped image
-
-            # Compute click position relative to original full-scale image
-            click_ratio = event.x / display_w
-            orig_x = int(click_ratio * orig_w)
+            if not 0 <= event.x < self.manual_score_display_size[0]:
+                return
+            # Convert with the dimensions of the image that is currently visible.
+            orig_x = display_x_to_source(
+                event.x,
+                cropped_image.width,
+                self.manual_score_display_size[0],
+            )
 
             # Get the calibration data for this topic
             score_positions = self.calibration_data["score_calibrations"].get(topic_label, {})
@@ -3930,7 +3970,7 @@ class QuizAppGUI:
 
 
 
-        img_label.bind("<Button-1>", on_click)
+        score_preview.bind("<Button-1>", on_click)
 
         def confirm():
             val_raw = score_var.get().strip()
