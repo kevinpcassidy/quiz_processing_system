@@ -2,6 +2,7 @@ import ast
 import csv
 import json
 import os
+import platform
 import re
 import subprocess
 import sys
@@ -122,8 +123,14 @@ class GoogleHelperTests(unittest.TestCase):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.touch()
             tesseract, poppler = bundled_tool_paths(directory)
-            self.assertEqual(tesseract, os.path.join(directory, required[0]))
-            self.assertEqual(poppler, os.path.join(directory, "vendor/poppler/Library/bin"))
+            self.assertEqual(
+                tesseract,
+                os.path.join(directory, "vendor", "tesseract", "tesseract.exe"),
+            )
+            self.assertEqual(
+                poppler,
+                os.path.join(directory, "vendor", "poppler", "Library", "bin"),
+            )
             Path(directory, required[-1]).unlink()
             self.assertEqual(bundled_tool_paths(directory), (None, None))
 
@@ -150,7 +157,10 @@ class GoogleHelperTests(unittest.TestCase):
         )
         configure_pdf2image(SimpleNamespace(pdf2image=implementation))
         self.assertEqual(implementation.Popen(["pdfinfo"], env={"A": "B"}), "process")
-        self.assertEqual(calls, [((["pdfinfo"],), {"env": {"A": "B"}})])
+        expected_kwargs = {"env": {"A": "B"}}
+        if platform.system() == "Windows" and hasattr(subprocess, "CREATE_NO_WINDOW"):
+            expected_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        self.assertEqual(calls, [((["pdfinfo"],), expected_kwargs)])
 
     def test_score_normalization_preserves_numeric_types(self):
         self.assertEqual(normalize_score_value("10.0"), 10)
