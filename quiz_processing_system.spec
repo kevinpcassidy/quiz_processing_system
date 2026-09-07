@@ -74,7 +74,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     console=False,
     contents_directory=".",
     icon=None,
@@ -84,7 +84,7 @@ collection = COLLECT(
     analysis.binaries,
     analysis.datas,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     name="Quiz Processing System",
 )
