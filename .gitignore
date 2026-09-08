@@ -23,7 +23,7 @@ credentials.json
 *.zip
 
 # Release-only Poppler and Tesseract distributions (approximately 140 MB)
-vendor/
+
 ~$SAMPLE.xlsx
 ~$SAMPLE.xlsx
 /build
