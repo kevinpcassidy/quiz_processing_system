@@ -1,0 +1,173 @@
+name: Build Windows portable application
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: |
+            release-requirements-1.0.0.txt
+            build-requirements.txt
+
+      - name: Install pinned application and build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check -r release-requirements-1.0.0.txt
+          python -m pip install --disable-pip-version-check -r build-requirements.txt
+          python -m pip check
+
+      - name: Reconstruct Desktop OAuth client configuration
+        shell: pwsh
+        env:
+          GOOGLE_OAUTH_CLIENT_JSON: ${{ secrets.GOOGLE_OAUTH_CLIENT_JSON }}
+        run: |
+          @'
+          import json
+          import os
+          from pathlib import Path
+
+          value = os.environ.get("GOOGLE_OAUTH_CLIENT_JSON")
+          if not value:
+              raise SystemExit("GOOGLE_OAUTH_CLIENT_JSON is empty or unavailable")
+          json.loads(value)
+          Path("google_oauth_client.json").write_text(value, encoding="utf-8")
+          '@ | python -
+
+      - name: Validate source release resources
+        shell: pwsh
+        run: |
+          $required = @(
+            "app.py",
+            "quiz_processing_system.spec",
+            "google_oauth_client.json",
+            "reference\SAMPLE.csv",
+            "reference\SAMPLE.pdf",
+            "reference\SAMPLE.xlsx",
+            "vendor\tesseract\tesseract.exe",
+            "vendor\tesseract\libtesseract-5.dll",
+            "vendor\tesseract\libleptonica-6.dll",
+            "vendor\tesseract\tessdata\eng.traineddata",
+            "vendor\poppler\Library\bin\pdfinfo.exe",
+            "vendor\poppler\Library\bin\pdftoppm.exe",
+            "vendor\poppler\Library\bin\poppler.dll",
+            "vendor\poppler\share\poppler\COPYING",
+            "vendor_docs\tesseract\doc\LICENSE",
+            "vendor_docs\poppler\docs\COPYING.txt",
+            "LICENSE",
+            "THIRD_PARTY_LICENSES.txt",
+            "POPPLER_SOURCE.md"
+          )
+          $missing = @($required | Where-Object { -not (Test-Path -LiteralPath $_ -PathType Leaf) })
+          if ($missing.Count -ne 0) {
+            throw "Required source resources are missing: $($missing -join ', ')"
+          }
+          if ((Get-ChildItem -LiteralPath "vendor\tesseract" -Filter "*.dll" -File).Count -eq 0) {
+            throw "The bundled Tesseract directory contains no DLLs"
+          }
+          if ((Get-ChildItem -LiteralPath "vendor\poppler\Library\bin" -Filter "*.dll" -File).Count -eq 0) {
+            throw "The bundled Poppler directory contains no DLLs"
+          }
+
+      - name: Run automated tests
+        shell: pwsh
+        run: |
+          python -m py_compile app.py quiz_processing_system.spec
+          python -m unittest discover -s tests -v
+
+      - name: Build PyInstaller onedir distribution
+        shell: pwsh
+        run: python -m PyInstaller --clean --noconfirm quiz_processing_system.spec
+
+      - name: Validate portable distribution
+        shell: pwsh
+        run: |
+          $distribution = "dist\Quiz Processing System"
+          $required = @(
+            "$distribution\Quiz Processing System.exe",
+            "$distribution\google_oauth_client.json",
+            "$distribution\reference\SAMPLE.csv",
+            "$distribution\reference\SAMPLE.pdf",
+            "$distribution\reference\SAMPLE.xlsx",
+            "$distribution\vendor\tesseract\tesseract.exe",
+            "$distribution\vendor\tesseract\libtesseract-5.dll",
+            "$distribution\vendor\tesseract\libleptonica-6.dll",
+            "$distribution\vendor\tesseract\tessdata\eng.traineddata",
+            "$distribution\vendor\poppler\Library\bin\pdfinfo.exe",
+            "$distribution\vendor\poppler\Library\bin\pdftoppm.exe",
+            "$distribution\vendor\poppler\Library\bin\poppler.dll",
+            "$distribution\vendor\poppler\share\poppler\COPYING",
+            "$distribution\vendor_docs\tesseract\doc\LICENSE",
+            "$distribution\vendor_docs\poppler\docs\COPYING.txt",
+            "$distribution\LICENSE",
+            "$distribution\THIRD_PARTY_LICENSES.txt",
+            "$distribution\POPPLER_SOURCE.md"
+          )
+          $missing = @($required | Where-Object { -not (Test-Path -LiteralPath $_ -PathType Leaf) })
+          if ($missing.Count -ne 0) {
+            throw "Portable distribution is incomplete: $($missing -join ', ')"
+          }
+
+          foreach ($tree in @("vendor\tesseract", "vendor\poppler", "vendor_docs", "reference")) {
+            $sourceRoot = (Resolve-Path -LiteralPath $tree).Path
+            $packagedRoot = (Resolve-Path -LiteralPath "$distribution\$tree").Path
+            $sourceFiles = @(Get-ChildItem -LiteralPath $sourceRoot -Recurse -File)
+            $packagedFiles = @(Get-ChildItem -LiteralPath $packagedRoot -Recurse -File)
+            if ($sourceFiles.Count -ne $packagedFiles.Count) {
+              throw "$tree file count differs: source=$($sourceFiles.Count), packaged=$($packagedFiles.Count)"
+            }
+            foreach ($sourceFile in $sourceFiles) {
+              $relative = [IO.Path]::GetRelativePath($sourceRoot, $sourceFile.FullName)
+              $packagedFile = Join-Path $packagedRoot $relative
+              if (-not (Test-Path -LiteralPath $packagedFile -PathType Leaf)) {
+                throw "Packaged file is missing: $tree\$relative"
+              }
+              $sourceHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $sourceFile.FullName).Hash
+              $packagedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $packagedFile).Hash
+              if ($sourceHash -ne $packagedHash) {
+                throw "Packaged file differs from source: $tree\$relative"
+              }
+            }
+          }
+
+      - name: Exercise bundled command-line tools
+        shell: pwsh
+        run: |
+          $distribution = "dist\Quiz Processing System"
+          & "$distribution\vendor\tesseract\tesseract.exe" --version
+          if ($LASTEXITCODE -ne 0) { throw "Bundled Tesseract version check failed" }
+          & "$distribution\vendor\poppler\Library\bin\pdftoppm.exe" -v
+          if ($LASTEXITCODE -ne 0) { throw "Bundled pdftoppm version check failed" }
+          & "$distribution\vendor\poppler\Library\bin\pdfinfo.exe" -v
+          if ($LASTEXITCODE -ne 0) { throw "Bundled pdfinfo version check failed" }
+
+      - name: Create portable ZIP
+        shell: pwsh
+        run: |
+          Compress-Archive -LiteralPath "dist\Quiz Processing System" -DestinationPath "Quiz_Processing_System_Windows.zip" -CompressionLevel Optimal
+          if (-not (Test-Path -LiteralPath "Quiz_Processing_System_Windows.zip" -PathType Leaf)) {
+            throw "Portable ZIP was not created"
+          }
+
+      - name: Upload portable ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: Quiz_Processing_System_Windows
+          path: Quiz_Processing_System_Windows.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14

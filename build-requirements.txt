@@ -1,0 +1,3 @@
+# Build-only dependency for the Windows release workflow.
+# Application and runtime dependencies are pinned separately per release.
+PyInstaller==6.16.0

@@ -169,13 +169,25 @@ application version and must match the GitHub Release tag (for example, applicat
 version `1.0.0` uses tag `v1.0.0`). Normal update checks use only the latest stable,
 non-draft GitHub Release.
 
-Build the Windows one-directory distribution from the repository root:
+Build the Windows one-directory distribution from the repository root with
+64-bit Python 3.11.x. Release 1.0.0 has a versioned snapshot of its application
+dependencies:
 
 ```powershell
-python -m pip install pyinstaller
-pyinstaller --clean --noconfirm quiz_processing_system.spec
+py -3.11 -m venv .venv-release
+.venv-release\Scripts\python -m pip install --upgrade pip
+.venv-release\Scripts\python -m pip install -r release-requirements-1.0.0.txt
+.venv-release\Scripts\python -m pip install -r build-requirements.txt
+.venv-release\Scripts\python -m PyInstaller --clean --noconfirm quiz_processing_system.spec
 Compress-Archive -Path "dist\Quiz Processing System\*" -DestinationPath "Quiz-Processing-System-1.0.0-Windows.zip"
 ```
+
+`requirements.txt` is the unpinned direct-dependency list for development;
+`release-requirements-1.0.0.txt` records the exact application package versions
+for release 1.0.0, while `build-requirements.txt` pins the PyInstaller build
+tool. For each future release, create a correspondingly versioned application
+dependency snapshot and review the build-tool pin. See `BUILDING.md` for the
+GitHub Actions build and portable-distribution validation procedure.
 
 Attach the versioned ZIP to the matching GitHub Release. The application prefers a
 `.zip` release asset containing `Windows` in its filename and falls back to the

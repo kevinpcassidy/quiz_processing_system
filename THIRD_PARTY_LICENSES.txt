@@ -18,8 +18,10 @@ BUNDLED PYTHON SOFTWARE
 The application is built with CPython (PSF License) and PyInstaller
 (GPL-2.0-or-later with the PyInstaller bootloader exception). PyInstaller
 collects the following direct Python dependencies and their runtime
-dependencies. Release versions are determined by the release build
-environment; requirements.txt is the authoritative direct-dependency list.
+dependencies. requirements.txt is the authoritative unpinned direct-dependency
+list for development. release-requirements-1.0.0.txt records the exact Python
+application packages used for release 1.0.0; PyInstaller is a separately
+installed build tool pinned in build-requirements.txt.
 
 Direct dependencies:
 
@@ -57,6 +59,7 @@ Runtime dependencies installed by these packages may include:
   requests                  Apache-2.0
   requests-oauthlib         ISC
   six                       MIT
+  tzdata                    Apache-2.0
   urllib3                   MIT
 
 Python and package license metadata and texts collected by PyInstaller remain
@@ -107,7 +110,7 @@ POPPLER WINDOWS DISTRIBUTION
   Distributor:              oschwartz10612/poppler-windows
   Distribution source:      https://github.com/oschwartz10612/poppler-windows
   Upstream:                 https://poppler.freedesktop.org/
-  Core license:             GPL-2.0-only or GPL-3.0-only
+  Core license:             GPL-2.0-or-later
 
 This Windows distribution is assembled from conda-forge packages. The entire
 downloaded vendor/poppler/ tree, including its package license metadata, must
@@ -140,7 +143,7 @@ license files supplied by the distribution:
   OpenJPEG (openjp2)                    BSD-2-Clause
   Pixman                                MIT
   Poppler (poppler, poppler-cpp,
-           poppler-glib and PDF tools)  GPL-2.0-only OR GPL-3.0-only
+           poppler-glib and PDF tools)  GPL-2.0-or-later
 
 This table identifies the DLL families visible in the selected distribution;
 it does not replace their complete license texts. In case of any discrepancy,
@@ -155,7 +158,8 @@ RELEASE-BUILDER CHECKLIST
 Before distributing a build:
 
 1. Keep LICENSE and this file beside Quiz Processing System.exe.
-2. Keep vendor_docs/ and the complete vendor/tesseract and vendor/poppler trees.
+2. Keep POPPLER_SOURCE.md, vendor_docs/, and the complete vendor/tesseract and
+   vendor/poppler trees.
 3. Do not remove license, notice, copyright, package metadata, or readme files
    from either vendor distribution.
 4. Confirm eng.traineddata has the size and SHA-256 recorded above.
