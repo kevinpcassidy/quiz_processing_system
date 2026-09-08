@@ -103,10 +103,15 @@ PACKAGED_RESOURCE_PATHS = (
     "reference",
     "LICENSE",
     "THIRD_PARTY_LICENSES.txt",
+    "POPPLER_SOURCE.md",
+    "vendor_docs",
     os.path.join("vendor", "tesseract", "tesseract.exe"),
+    os.path.join("vendor", "tesseract", "libtesseract-5.dll"),
+    os.path.join("vendor", "tesseract", "libleptonica-6.dll"),
     os.path.join("vendor", "tesseract", "tessdata", "eng.traineddata"),
     os.path.join("vendor", "poppler", "Library", "bin", "pdfinfo.exe"),
     os.path.join("vendor", "poppler", "Library", "bin", "pdftoppm.exe"),
+    os.path.join("vendor", "poppler", "Library", "bin", "poppler.dll"),
 )
 
 

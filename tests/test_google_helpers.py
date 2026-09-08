@@ -51,10 +51,15 @@ namespace = {
         "reference",
         "LICENSE",
         "THIRD_PARTY_LICENSES.txt",
+        "POPPLER_SOURCE.md",
+        "vendor_docs",
         os.path.join("vendor", "tesseract", "tesseract.exe"),
+        os.path.join("vendor", "tesseract", "libtesseract-5.dll"),
+        os.path.join("vendor", "tesseract", "libleptonica-6.dll"),
         os.path.join("vendor", "tesseract", "tessdata", "eng.traineddata"),
         os.path.join("vendor", "poppler", "Library", "bin", "pdfinfo.exe"),
         os.path.join("vendor", "poppler", "Library", "bin", "pdftoppm.exe"),
+        os.path.join("vendor", "poppler", "Library", "bin", "poppler.dll"),
     ),
     "GITHUB_RELEASES_URL": "https://github.com/kevinpcassidy/quiz_processing_system/releases",
     "GOOGLE_CONNECTED_STATUS": "Google Sheets: Connected",
@@ -352,12 +357,28 @@ class SampleWorksheetTests(unittest.TestCase):
             '("vendor/poppler", "vendor/poppler")',
             '("LICENSE", ".")',
             '("THIRD_PARTY_LICENSES.txt", ".")',
+            '("POPPLER_SOURCE.md", ".")',
             'contents_directory="."',
             "console=False",
         ):
             self.assertIn(resource, spec)
         for excluded in ('("tests",', '("venv",', '(".git",', '("rosters",'):
             self.assertNotIn(excluded, spec)
+
+    def test_windows_workflow_builds_and_validates_portable_zip(self):
+        workflow = Path(".github/workflows/build-windows.yml").read_text(encoding="utf-8")
+        for expected in (
+            "workflow_dispatch:",
+            "runs-on: windows-latest",
+            "actions/checkout@v5",
+            "actions/setup-python@v6",
+            "python-version: '3.11'",
+            "GOOGLE_OAUTH_CLIENT_JSON: ${{ secrets.GOOGLE_OAUTH_CLIENT_JSON }}",
+            "python -m PyInstaller --clean --noconfirm quiz_processing_system.spec",
+            "Quiz_Processing_System_Windows.zip",
+            "actions/upload-artifact@v4",
+        ):
+            self.assertIn(expected, workflow)
 
 
 if __name__ == "__main__":

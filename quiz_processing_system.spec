@@ -8,11 +8,17 @@ required_release_paths = (
     "google_oauth_client.json",
     "reference",
     "vendor/tesseract/tesseract.exe",
+    "vendor/tesseract/libtesseract-5.dll",
+    "vendor/tesseract/libleptonica-6.dll",
     "vendor/tesseract/tessdata/eng.traineddata",
     "vendor/poppler/Library/bin/pdfinfo.exe",
     "vendor/poppler/Library/bin/pdftoppm.exe",
+    "vendor/poppler/Library/bin/poppler.dll",
+    "vendor_docs/tesseract/doc/LICENSE",
+    "vendor_docs/poppler/docs/COPYING.txt",
     "LICENSE",
     "THIRD_PARTY_LICENSES.txt",
+    "POPPLER_SOURCE.md",
 )
 missing_release_paths = [path for path in required_release_paths if not os.path.exists(path)]
 if missing_release_paths:
@@ -28,6 +34,7 @@ datas = [
     ("vendor_docs", "vendor_docs"),
     ("LICENSE", "."),
     ("THIRD_PARTY_LICENSES.txt", "."),
+    ("POPPLER_SOURCE.md", "."),
 ]
 binaries = []
 

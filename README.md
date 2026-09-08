@@ -6,19 +6,30 @@ Google Sheets developer setup and the complete test checklist are documented in 
 
 ## Run and test from source
 
-Install the dependencies from `requirements.txt`. PDF conversion requires
-[Poppler](https://poppler.freedesktop.org/) and OCR requires
-[Tesseract](https://github.com/tesseract-ocr/tesseract); install both separately
-and make their command-line programs available on `PATH`. On Windows, this
-means `pdfinfo.exe` and `pdftoppm.exe` from Poppler and `tesseract.exe` from
-Tesseract. A complete local `vendor/` release tree takes precedence when it is
-present, but it is intentionally not stored in Git.
+Python 3.11.x is the supported interpreter for source development and Windows
+release builds. Create an isolated environment and install the direct development
+dependencies from `requirements.txt`:
 
-Then run:
-
-```text
-python app.py
+```powershell
+py -3.11 -m venv .venv
+.venv\Scripts\python -m pip install --upgrade pip
+.venv\Scripts\python -m pip install -r requirements.txt
+.venv\Scripts\python app.py
 ```
+
+`requirements.txt` intentionally lists direct dependencies without version
+pins so contributors can test compatible updates. To reproduce the Python
+application dependencies shipped in release 1.0.0, install
+`release-requirements-1.0.0.txt` instead. That release snapshot does not include
+the separately installed PyInstaller build tool, which is pinned in
+`build-requirements.txt`.
+
+PDF conversion requires [Poppler](https://poppler.freedesktop.org/) and OCR
+requires [Tesseract](https://github.com/tesseract-ocr/tesseract). Their
+command-line programs must be available on `PATH`, unless the checked-in
+`vendor/` release trees are present; those trees take precedence. On Windows,
+the required programs are `pdfinfo.exe` and `pdftoppm.exe` from Poppler and
+`tesseract.exe` from Tesseract.
 
 The source entry point is `app.py`. Run the automated checks with:
 
@@ -45,11 +56,21 @@ do not copy only the executables, because their DLLs and license materials are
 required. The OAuth file must be a Google Desktop application client. It is
 embedded in the release but remains excluded from Git.
 
-Build the one-directory application from a 64-bit Windows Python environment:
+Build the one-directory application from a 64-bit Windows Python 3.11.x
+environment. For release 1.0.0, create a clean environment and install its
+versioned application dependency snapshot before installing PyInstaller:
 
-```text
-pyinstaller --clean --noconfirm quiz_processing_system.spec
+```powershell
+py -3.11 -m venv .venv-release
+.venv-release\Scripts\python -m pip install --upgrade pip
+.venv-release\Scripts\python -m pip install -r release-requirements-1.0.0.txt
+.venv-release\Scripts\python -m pip install -r build-requirements.txt
+.venv-release\Scripts\python -m PyInstaller --clean --noconfirm quiz_processing_system.spec
 ```
+
+See [`BUILDING.md`](BUILDING.md) for local and GitHub Actions build procedures,
+validation details, artifact download instructions, and the portable-system
+test checklist.
 
 The spec validates release inputs, bundles the complete `reference/` directory
 automatically (including `reference/SAMPLE.pdf` when present), and produces a

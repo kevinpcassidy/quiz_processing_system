@@ -3,6 +3,8 @@
 
 # Virtual Environment files
 venv/
+.venv/
+.venv-release/
 
 # Python bytecode and test caches
 __pycache__/
