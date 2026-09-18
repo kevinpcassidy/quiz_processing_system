@@ -31,3 +31,4 @@ credentials.json
 /build
 /dist
 /.venv311
+saved_topics.json
