@@ -26,6 +26,7 @@ helper_names = {
     "normalize_score_value",
     "read_roster_names",
     "release_download_url",
+    "reset_session_file",
     "resource_root",
     "bundled_tool_paths",
     "missing_packaged_resources",
@@ -77,6 +78,7 @@ normalize_score_row = namespace["normalize_score_row"]
 normalize_score_value = namespace["normalize_score_value"]
 read_roster_names = namespace["read_roster_names"]
 release_download_url = namespace["release_download_url"]
+reset_session_file = namespace["reset_session_file"]
 unique_gradebook_title = namespace["unique_gradebook_title"]
 version_tuple = namespace["version_tuple"]
 write_roster_names = namespace["write_roster_names"]
@@ -235,6 +237,14 @@ class GoogleHelperTests(unittest.TestCase):
             with open(path, encoding="utf-8") as handle:
                 self.assertEqual(json.load(handle), {"new": True})
             self.assertFalse(os.path.exists(f"{path}.tmp"))
+
+    def test_reset_session_file_removes_stale_data_and_allows_missing_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "saved_topics.json")
+            Path(path).write_text('["Old topic"]', encoding="utf-8")
+            reset_session_file(path)
+            self.assertFalse(os.path.exists(path))
+            reset_session_file(path)
 
     def test_sample_grading_scale_is_saved_and_replaces_same_named_scale(self):
         with tempfile.TemporaryDirectory() as directory:

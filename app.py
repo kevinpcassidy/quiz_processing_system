@@ -187,6 +187,16 @@ def atomic_write_json(path, data):
     os.replace(temporary_path, path)
 
 
+def reset_session_file(path):
+    """Remove session-only data left behind by an earlier application run."""
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+    except OSError as error:
+        print(f"[WARN] Could not remove session file '{path}': {error}")
+
+
 def install_sample_grading_scale(path, grading_scales):
     """Install the canonical SAMPLE scale, replacing any scale with that name."""
     grading_scales["SAMPLE"] = list(SAMPLE_GRADING_SCALE)
@@ -452,6 +462,12 @@ class QuizAppGUI:
         style.configure("Header.TLabel", font=("Segoe UI", 11, "bold"))
         style.configure("Bold.TLabel", font=("Segoe UI", 10, "bold"))
         style.configure("ProgressCheck.TLabel", foreground="#22aa22", font=("Segoe UI", 11, "bold"))  # green ✔️
+        style.configure("Primary.TButton", foreground="white", background="#0b63ce")
+        style.map(
+            "Primary.TButton",
+            foreground=[("disabled", "#e6e6e6"), ("!disabled", "white")],
+            background=[("active", "#084c9e"), ("!disabled", "#0b63ce")],
+        )
 
         #Get background color
         self.bg_color = self.root.cget("bg")
@@ -478,6 +494,10 @@ class QuizAppGUI:
         os.makedirs(self.app_data_dir, exist_ok=True)
         self.settings_file = os.path.join(self.app_data_dir, "quiz_settings.json")
         self.token_file = os.path.join(self.app_data_dir, TOKEN_FILE)
+        self.topics_file = os.path.join(self.app_data_dir, "saved_topics.json")
+        reset_session_file(self.topics_file)
+        if self.app_data_dir != self.project_root:
+            reset_session_file(os.path.join(self.project_root, "saved_topics.json"))
         self.oauth_client_file = os.path.join(self.project_root, OAUTH_CLIENT_FILE)
 
         # Dictionary to hold local and Google-backed class definitions.
@@ -881,12 +901,7 @@ class QuizAppGUI:
         #Delete temp copies of gradebook
         self._cleanup_temp_gradebook_copies()
         
-        """Delete or clear topics file when window closes."""
-        if os.path.exists(self.topics_file):
-            try:
-                os.remove(self.topics_file)
-            except Exception as e:
-                print("Error deleting topics file:", e)
+        reset_session_file(self.topics_file)
         self.root.destroy()
 
     def load_settings(self):
@@ -1033,9 +1048,6 @@ class QuizAppGUI:
 
         self.topic_vars = []
         self.topic_entries = []
-
-        # File where topics will be stored
-        self.topics_file = os.path.join(os.getcwd(), "saved_topics.json")
 
         # Add at least one entry field
         self._add_topic_entry()
@@ -1662,6 +1674,18 @@ class QuizAppGUI:
             text="Export Current Rosters for Mail Merge",
             command=self._export_rosters_for_mail_merge,
         ).pack(fill="x", padx=18, pady=(0, 10))
+        if self.google_sheets_enabled_var.get() and self.google_spreadsheet_id:
+            ttk.Button(
+                home,
+                text="Open Google Sheets Gradebook",
+                command=self._open_google_gradebook,
+            ).pack(fill="x", padx=18, pady=(0, 10))
+        elif self.enable_gradebook_var.get():
+            ttk.Button(
+                home,
+                text="Open Local Gradebook",
+                command=self._on_view_gradebook,
+            ).pack(fill="x", padx=18, pady=(0, 10))
         ttk.Frame(home, height=15).pack()
 
     def _setup_google_sheets_panel(self):
@@ -2779,12 +2803,22 @@ class QuizAppGUI:
         self.root.wait_window(popup)
         return result["continue"]
 
-    def _on_run_calibration(self):
+    def _show_calibration_navigation(self, back_command=None):
+        """Add consistent Back and Home controls to a calibration screen."""
+        navigation = ttk.Frame(self.center_frame)
+        navigation.pack(pady=(8, 4))
+        back_button = ttk.Button(navigation, text="Back", command=back_command)
+        back_button.pack(side="left", padx=4)
+        if back_command is None:
+            back_button.state(["disabled"])
+        ttk.Button(navigation, text="Home", command=self.reset_panels).pack(side="left", padx=4)
+
+    def _on_run_calibration(self, reset_calibration=True):
         if not self._run_when_dependency_ready(
             "pdf", self._on_run_calibration, "Preparing PDF and calibration tools…"
         ):
             return
-        if self._selected_class_is_google():
+        if reset_calibration and self._selected_class_is_google():
             if self.show_google_extraction_warning_var.get() and not self._confirm_google_extraction_safety():
                 return
             try:
@@ -2792,7 +2826,7 @@ class QuizAppGUI:
             except (OSError, ValueError) as error:
                 messagebox.showerror("Google Roster Error", f"Refresh this roster before extraction.\n\n{error}")
                 return
-        else:
+        elif reset_calibration:
             self.google_roster_snapshot = None
         # --- Clear center and right frames ---
         for widget in self.center_frame.winfo_children():
@@ -2800,20 +2834,21 @@ class QuizAppGUI:
         for widget in self.right_frame.winfo_children():
             widget.destroy()
 
-        # --- Clear any previous calibration data to force fresh setup ---
-        self.name_box = None
-        self.score_boxes = {}
-        self.calibration_data = {
-            "name_box": None,
-            "score_boxes": {},
-            "score_calibrations": {}
-        }
-        self.page_side_box = None
-        if hasattr(self, "page_side_clicks"):
-            self.page_side_clicks.clear()
-        if hasattr(self, "score_click_positions"):
-            self.score_click_positions.clear()
-        self.skipped_pages = []
+        if reset_calibration:
+            # Starting a new run clears any calibration left from the prior run.
+            self.name_box = None
+            self.score_boxes = {}
+            self.calibration_data = {
+                "name_box": None,
+                "score_boxes": {},
+                "score_calibrations": {}
+            }
+            self.page_side_box = None
+            if hasattr(self, "page_side_clicks"):
+                self.page_side_clicks.clear()
+            if hasattr(self, "score_click_positions"):
+                self.score_click_positions.clear()
+            self.skipped_pages = []
 
 
         # Check for topics
@@ -2850,6 +2885,7 @@ class QuizAppGUI:
                      wraplength=self.center_frame.winfo_width() - 20,  # wrap near the frame width
                      justify="left",
                      foreground="red").pack(pady=50)
+            self._show_calibration_navigation()
             return
 
 
@@ -2894,10 +2930,14 @@ class QuizAppGUI:
             self.center_frame,
             text="Next",
             width=15,
+            style="Primary.TButton",
             command=lambda: self._on_next_score_calibration(topic_index=0)
         )
         self.next_button.pack(pady=(5, 10))
         self.next_button.state(["disabled"])   # start disabled
+        self._show_calibration_navigation()
+        if not reset_calibration:
+            self._update_next_button_state()
 
  
     def _update_next_button_state(self):
@@ -2954,9 +2994,13 @@ class QuizAppGUI:
 
             ttk.Button(
                 self.center_frame,
-                text="Extract Data from PDF",
+                text="Extract Student Scores",
+                style="Primary.TButton",
                 command=self.run_data_extraction
             ).pack(pady=5)
+            self._show_calibration_navigation(
+                back_command=lambda: self._on_next_score_calibration(len(self.topics) - 1)
+            )
             self.mark_step_done("calibration")
             return
 
@@ -2985,11 +3029,14 @@ class QuizAppGUI:
             text=f"Click at each score from least to greatest.\nCurrent grading scale: {score_labels}"
         ).pack(pady=4)
 
-        clicked_count_var = tk.StringVar(value=f"Clicked: 0 / {len(score_labels)}")
+        saved_calibration = self.calibration_data["score_calibrations"].get(topic_name, {})
+        self.score_click_positions[topic_name] = [
+            saved_calibration[label] for label in score_labels if label in saved_calibration
+        ]
+        clicked_count_var = tk.StringVar(
+            value=f"Clicked: {len(self.score_click_positions[topic_name])} / {len(score_labels)}"
+        )
         ttk.Label(self.center_frame, textvariable=clicked_count_var).pack(pady=(2, 4))
-
-        # Reset clicks for this topic
-        self.score_click_positions[topic_name] = []
 
         # --- Right panel ---
         for widget in self.right_frame.winfo_children():
@@ -3017,9 +3064,9 @@ class QuizAppGUI:
         self.right_canvas.pack(fill="both", expand=True)
         score_canvas = self.right_canvas
         self.right_photo = None
-        self.score_coords = []       # original cropped-image x positions
-        self.score_lines = []        # canvas line IDs
-        self.score_labels_drawn = [] # canvas label IDs
+        self.score_coords = list(self.score_click_positions[topic_name])
+        self.score_lines = [None] * len(self.score_coords)        # canvas line IDs
+        self.score_labels_drawn = [None] * len(self.score_coords) # canvas label IDs
 
         # --- Function to redraw image + overlays ---
         def redraw_canvas(widget, viewport_size=None):
@@ -3097,8 +3144,20 @@ class QuizAppGUI:
             #print(f"[DEBUG] Saved calibration for '{topic_name}': {scale_dict}")
             self._on_next_score_calibration(topic_index=topic_index + 1)
 
-        next_btn = ttk.Button(btn_frame, text="Next", state='disabled', command=next_topic)
+        next_btn = ttk.Button(
+            btn_frame,
+            text="Next",
+            state="normal" if len(self.score_coords) == len(score_labels) else "disabled",
+            style="Primary.TButton",
+            command=next_topic,
+        )
         next_btn.pack(side="left", padx=4)
+        back_command = (
+            (lambda: self._on_run_calibration(reset_calibration=False))
+            if topic_index == 0
+            else (lambda: self._on_next_score_calibration(topic_index - 1))
+        )
+        self._show_calibration_navigation(back_command=back_command)
 
         # Fit against the canvas's drawable area, not its larger parent frame.
         resize_job = None
@@ -3246,8 +3305,17 @@ class QuizAppGUI:
         btn_frame = ttk.Frame(self.center_frame)
         btn_frame.pack(pady=6)
 
-        next_btn = ttk.Button(btn_frame, text="Next", state='disabled', command=confirm)
+        next_btn = ttk.Button(
+            btn_frame,
+            text="Next",
+            state="disabled",
+            style="Primary.TButton",
+            command=confirm,
+        )
         next_btn.pack(side="left", padx=4)
+        self._show_calibration_navigation(
+            back_command=lambda: self._on_run_calibration(reset_calibration=False)
+        )
 
         # --- Optional: handle frame resize to redraw canvas if needed ---
         def redraw_canvas(event=None):
@@ -4245,10 +4313,18 @@ class QuizAppGUI:
                 and not class_info.get("needs_remapping")):
             self.google_sync_button = ttk.Button(
                 self.center_frame,
-                text="Sync with Google Sheet",
+                text="Sync Grades to Google Sheets",
+                style="Primary.TButton",
                 command=update_gsheets,
             )
             self.google_sync_button.pack(pady=(20,10))
+
+        if self.google_sheets_enabled_var.get() and self.google_spreadsheet_id:
+            ttk.Button(
+                self.center_frame,
+                text="Open Google Sheets Gradebook",
+                command=self._open_google_gradebook,
+            ).pack(pady=(0, 10))
 
         # --- Right frame: clear and insert Treeview ---
         for widget in self.right_frame.winfo_children():
