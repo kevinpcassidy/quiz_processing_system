@@ -24,6 +24,7 @@ helper_names = {
     "install_sample_grading_scale",
     "normalize_score_row",
     "normalize_score_value",
+    "normalize_grading_scale_scores",
     "read_roster_names",
     "release_download_url",
     "reset_session_file",
@@ -76,6 +77,7 @@ google_connection_is_connected = namespace["google_connection_is_connected"]
 install_sample_grading_scale = namespace["install_sample_grading_scale"]
 normalize_score_row = namespace["normalize_score_row"]
 normalize_score_value = namespace["normalize_score_value"]
+normalize_grading_scale_scores = namespace["normalize_grading_scale_scores"]
 read_roster_names = namespace["read_roster_names"]
 release_download_url = namespace["release_download_url"]
 reset_session_file = namespace["reset_session_file"]
@@ -180,6 +182,14 @@ class GoogleHelperTests(unittest.TestCase):
         self.assertEqual(normalize_score_value(None), "")
         self.assertEqual(normalize_score_value(" Skip "), "Skip")
         self.assertEqual(normalize_score_row(["00123", "10.0", "7.5"]), ["00123", 10, 7.5])
+
+    def test_grading_scale_normalization_preserves_integer_and_decimal_types(self):
+        self.assertEqual(
+            normalize_grading_scale_scores([5, 6.0, "7", "8.5", "skip"]),
+            [5, 6, 7, 8.5, "Skip"],
+        )
+        with self.assertRaises(ValueError):
+            normalize_grading_scale_scores(["not a score"])
 
     def test_google_progress_status_animates_and_reports_slow_connections(self):
         self.assertEqual(

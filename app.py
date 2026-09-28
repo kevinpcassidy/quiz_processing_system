@@ -277,6 +277,20 @@ def normalize_score_row(row):
     return [values[0], *(normalize_score_value(value) for value in values[1:])]
 
 
+def normalize_grading_scale_scores(scores):
+    """Normalize grade-scale numbers while preserving the optional Skip label."""
+    normalized = []
+    for score in scores:
+        if isinstance(score, str) and score.strip().lower() == "skip":
+            normalized.append("Skip")
+            continue
+        value = normalize_score_value(score)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"Invalid grading-scale score: {score!r}")
+        normalized.append(value)
+    return normalized
+
+
 def ensure_worksheet_size(worksheet, required_rows=None, required_columns=None):
     """Expand a worksheet before writing beyond its current grid limits."""
     current_rows = int(getattr(worksheet, "row_count", 0) or 0)
@@ -462,13 +476,6 @@ class QuizAppGUI:
         style.configure("Header.TLabel", font=("Segoe UI", 11, "bold"))
         style.configure("Bold.TLabel", font=("Segoe UI", 10, "bold"))
         style.configure("ProgressCheck.TLabel", foreground="#22aa22", font=("Segoe UI", 11, "bold"))  # green ✔️
-        style.configure("Primary.TButton", foreground="white", background="#0b63ce")
-        style.map(
-            "Primary.TButton",
-            foreground=[("disabled", "#e6e6e6"), ("!disabled", "white")],
-            background=[("active", "#084c9e"), ("!disabled", "#0b63ce")],
-        )
-
         #Get background color
         self.bg_color = self.root.cget("bg")
 
@@ -598,6 +605,24 @@ class QuizAppGUI:
  
   
     # ---------------- UTILITY ----------------
+    def _primary_button(self, parent, **options):
+        """Create a consistently filled primary-action button across Tk themes."""
+        defaults = {
+            "background": "#0b63ce",
+            "foreground": "white",
+            "activebackground": "#084c9e",
+            "activeforeground": "white",
+            "disabledforeground": "#d9e6f5",
+            "font": ("Segoe UI", 9, "bold"),
+            "relief": "raised",
+            "borderwidth": 1,
+            "highlightthickness": 0,
+            "padx": 10,
+            "pady": 3,
+        }
+        defaults.update(options)
+        return tk.Button(parent, **defaults)
+
     def _build_google_connection_status(self, parent, wraplength):
         """Build a noninteractive connection indicator matching workflow status icons."""
         frame = ttk.Frame(parent)
@@ -2666,7 +2691,11 @@ class QuizAppGUI:
 
             # Update JSON dictionary
             grading_scales[name] = display_scores
-            self.grading_scales[name] = display_scores 
+            grading_scales = {
+                scale_name: normalize_grading_scale_scores(scale_scores)
+                for scale_name, scale_scores in grading_scales.items()
+            }
+            self.grading_scales = dict(grading_scales)
 
 
             # Save to JSON
@@ -2690,15 +2719,8 @@ class QuizAppGUI:
             try:
                 with open(self.grading_file, "r", encoding="utf-8") as f:
                     self.grading_scales = json.load(f)
-                # Convert loaded scores to normalized types: float values + optional "Skip"
                 for key, scores in self.grading_scales.items():
-                    normalized = []
-                    for s in scores:
-                        if isinstance(s, str) and s.strip().lower() == "skip":
-                            normalized.append("Skip")
-                        else:
-                            normalized.append(float(s))
-                    self.grading_scales[key] = normalized
+                    self.grading_scales[key] = normalize_grading_scale_scores(scores)
             except Exception as e:
                 print("Error loading grading scales:", e)
                 self.grading_scales = {}
@@ -2926,15 +2948,14 @@ class QuizAppGUI:
         ttk.Label(self.center_frame, text="Press next to move to score box calibration.",
                   font=("Helvetica", 10, "bold")).pack(pady=(5, 2))
 
-        self.next_button = ttk.Button(
+        self.next_button = self._primary_button(
             self.center_frame,
             text="Next",
             width=15,
-            style="Primary.TButton",
-            command=lambda: self._on_next_score_calibration(topic_index=0)
+            command=lambda: self._on_next_score_calibration(topic_index=0),
         )
         self.next_button.pack(pady=(5, 10))
-        self.next_button.state(["disabled"])   # start disabled
+        self.next_button.configure(state="disabled")   # start disabled
         self._show_calibration_navigation()
         if not reset_calibration:
             self._update_next_button_state()
@@ -2961,9 +2982,9 @@ class QuizAppGUI:
         # Update button
         if hasattr(self, "next_button"):
             if ready:
-                self.next_button.state(["!disabled"])
+                self.next_button.configure(state="normal")
             else:
-                self.next_button.state(["disabled"])
+                self.next_button.configure(state="disabled")
 
  
     def _on_next_score_calibration(self, topic_index=0, bypass_page_side=False):
@@ -2992,11 +3013,10 @@ class QuizAppGUI:
             ttk.Label(self.center_frame, text="All topics calibrated!", style="Header.TLabel").pack(pady=10)
             ttk.Label(self.center_frame, text="Press the Extract button to begin processing your pdf file.").pack(pady=15)
 
-            ttk.Button(
+            self._primary_button(
                 self.center_frame,
                 text="Extract Student Scores",
-                style="Primary.TButton",
-                command=self.run_data_extraction
+                command=self.run_data_extraction,
             ).pack(pady=5)
             self._show_calibration_navigation(
                 back_command=lambda: self._on_next_score_calibration(len(self.topics) - 1)
@@ -3144,19 +3164,19 @@ class QuizAppGUI:
             #print(f"[DEBUG] Saved calibration for '{topic_name}': {scale_dict}")
             self._on_next_score_calibration(topic_index=topic_index + 1)
 
-        next_btn = ttk.Button(
+        next_btn = self._primary_button(
             btn_frame,
             text="Next",
             state="normal" if len(self.score_coords) == len(score_labels) else "disabled",
-            style="Primary.TButton",
             command=next_topic,
         )
         next_btn.pack(side="left", padx=4)
-        back_command = (
-            (lambda: self._on_run_calibration(reset_calibration=False))
-            if topic_index == 0
-            else (lambda: self._on_next_score_calibration(topic_index - 1))
-        )
+        if topic_index > 0:
+            back_command = lambda: self._on_next_score_calibration(topic_index - 1)
+        elif self.enable_side_detection.get():
+            back_command = lambda: self._prompt_page_side_calibration(topic_index=0)
+        else:
+            back_command = lambda: self._on_run_calibration(reset_calibration=False)
         self._show_calibration_navigation(back_command=back_command)
 
         # Fit against the canvas's drawable area, not its larger parent frame.
@@ -3225,10 +3245,24 @@ class QuizAppGUI:
             wraplength=self.center_frame.winfo_width() - 20
         ).pack(pady=(20, 6))
 
-        # Click positions storage
-        self.page_side_clicks = []
-        self.page_side_lines = []
-        self.page_side_labels_drawn = []
+        # Restore completed positions when navigating back from score calibration.
+        self.page_side_clicks = list(self.calibration_data.get("page_side_positions", []))
+        self.page_side_lines = [None] * len(self.page_side_clicks)
+        self.page_side_labels_drawn = [None] * len(self.page_side_clicks)
+
+        for i, x_orig in enumerate(self.page_side_clicks):
+            x_display = int(x_orig * self.image_scale)
+            self.page_side_lines[i] = canvas.create_line(
+                x_display, 0, x_display, resized.height, fill="red", width=1
+            )
+            self.page_side_labels_drawn[i] = canvas.create_text(
+                x_display + 4,
+                resized.height / 2 + 10,
+                text="Side A" if i == 0 else "Side B",
+                fill="red",
+                anchor="nw",
+                font=("TkDefaultFont", 9, "bold"),
+            )
 
         # --- Click logic ---
         def on_click(event):
@@ -3263,6 +3297,9 @@ class QuizAppGUI:
         # --- Reset Button ---
         def reset_page_side():
             self.page_side_clicks.clear()          # clear recorded clicks
+            self.page_side_lines.clear()
+            self.page_side_labels_drawn.clear()
+            self.calibration_data.pop("page_side_positions", None)
             canvas.delete("all")                    # remove all overlays
             # redraw the cropped image
             canvas.create_image(0, 0, anchor="nw", image=photo)
@@ -3285,7 +3322,7 @@ class QuizAppGUI:
             font=("Helvetica", 11)
         ).pack(pady=(4, 2))
 
-        side_var = tk.StringVar(value="A")
+        side_var = tk.StringVar(value=self.calibration_data.get("expected_side", "A"))
         ttk.Radiobutton(self.center_frame, text="Side A", variable=side_var, value="A").pack(pady=2)
         ttk.Radiobutton(self.center_frame, text="Side B", variable=side_var, value="B").pack(pady=2)
 
@@ -3293,7 +3330,7 @@ class QuizAppGUI:
 
         # --- Next button ---
         def confirm():
-                self.calibration_data["page_side_positions"] = self.page_side_clicks
+                self.calibration_data["page_side_positions"] = list(self.page_side_clicks)
                 self.expected_page_side = side_var.get()
                 self.calibration_data['expected_side'] = side_var.get()
                 #print(f"[DEBUG] Page Side calibration saved: {self.calibration_data['page_side_positions']}, expected: {self.calibration_data['expected_side']}")
@@ -3305,11 +3342,10 @@ class QuizAppGUI:
         btn_frame = ttk.Frame(self.center_frame)
         btn_frame.pack(pady=6)
 
-        next_btn = ttk.Button(
+        next_btn = self._primary_button(
             btn_frame,
             text="Next",
-            state="disabled",
-            style="Primary.TButton",
+            state="normal" if len(self.page_side_clicks) == 2 else "disabled",
             command=confirm,
         )
         next_btn.pack(side="left", padx=4)
@@ -4304,17 +4340,16 @@ class QuizAppGUI:
 
         def update_gsheets():
             if self.update_gsheet_from_extracted_data():
-                self.google_sync_button.state(["disabled"])
+                self.google_sync_button.configure(state="disabled")
 
         class_info = self.classes.get(self.class_combo.get(), {})
         if (self.google_sheets_enabled_var.get()
                 and isinstance(class_info, dict)
                 and class_info.get("source") == "google_sheet"
                 and not class_info.get("needs_remapping")):
-            self.google_sync_button = ttk.Button(
+            self.google_sync_button = self._primary_button(
                 self.center_frame,
                 text="Sync Grades to Google Sheets",
-                style="Primary.TButton",
                 command=update_gsheets,
             )
             self.google_sync_button.pack(pady=(20,10))
@@ -4429,7 +4464,7 @@ class QuizAppGUI:
                 if hasattr(self, "update_gradebook_btn"):
                     self.update_gradebook_btn.state(["!disabled"])
                 if hasattr(self, "google_sync_button"):
-                    self.google_sync_button.state(["!disabled"])
+                    self.google_sync_button.configure(state="normal")
                 
                 # ---- UPDATE extracted_data to match the edited value ----
                 """Note - this is for my personal version to integrate extracted data for update to google sheets"""
