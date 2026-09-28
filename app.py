@@ -607,6 +607,7 @@ class QuizAppGUI:
     # ---------------- UTILITY ----------------
     def _primary_button(self, parent, **options):
         """Create a consistently filled primary-action button across Tk themes."""
+        enabled = options.pop("state", "normal") != "disabled"
         defaults = {
             "background": "#0b63ce",
             "foreground": "white",
@@ -621,7 +622,33 @@ class QuizAppGUI:
             "pady": 3,
         }
         defaults.update(options)
-        return tk.Button(parent, **defaults)
+        button = tk.Button(parent, **defaults)
+        self._set_primary_button_enabled(button, enabled)
+        return button
+
+    def _set_primary_button_enabled(self, button, enabled):
+        """Switch a primary button between gray disabled and blue enabled states."""
+        if enabled:
+            button.configure(
+                state="normal",
+                background="#0b63ce",
+                foreground="white",
+                activebackground="#084c9e",
+                activeforeground="white",
+                font=("Segoe UI", 9, "bold"),
+                relief="raised",
+            )
+        else:
+            button.configure(
+                state="disabled",
+                background="#d9d9d9",
+                foreground="#777777",
+                disabledforeground="#777777",
+                activebackground="#d9d9d9",
+                activeforeground="#777777",
+                font=("Segoe UI", 9),
+                relief="raised",
+            )
 
     def _build_google_connection_status(self, parent, wraplength):
         """Build a noninteractive connection indicator matching workflow status icons."""
@@ -2955,7 +2982,7 @@ class QuizAppGUI:
             command=lambda: self._on_next_score_calibration(topic_index=0),
         )
         self.next_button.pack(pady=(5, 10))
-        self.next_button.configure(state="disabled")   # start disabled
+        self._set_primary_button_enabled(self.next_button, False)
         self._show_calibration_navigation()
         if not reset_calibration:
             self._update_next_button_state()
@@ -2982,9 +3009,9 @@ class QuizAppGUI:
         # Update button
         if hasattr(self, "next_button"):
             if ready:
-                self.next_button.configure(state="normal")
+                self._set_primary_button_enabled(self.next_button, True)
             else:
-                self.next_button.configure(state="disabled")
+                self._set_primary_button_enabled(self.next_button, False)
 
  
     def _on_next_score_calibration(self, topic_index=0, bypass_page_side=False):
@@ -3137,7 +3164,7 @@ class QuizAppGUI:
             redraw_canvas(self.right_canvas)
             clicked_count_var.set(f"Clicked: {len(self.score_coords)} / {len(score_labels)}")
             if len(self.score_coords) >= len(score_labels):
-                next_btn.config(state='normal')
+                self._set_primary_button_enabled(next_btn, True)
 
         self.right_canvas.bind("<Button-1>", on_click)
 
@@ -3150,7 +3177,7 @@ class QuizAppGUI:
             self.score_lines.clear()
             self.score_labels_drawn.clear()
             clicked_count_var.set(f"Clicked: 0 / {len(score_labels)}")
-            next_btn.config(state='disabled')
+            self._set_primary_button_enabled(next_btn, False)
             redraw_canvas(self.right_canvas)
 
         reset_btn = ttk.Button(btn_frame, text="Reset", command=reset_clicks)
@@ -3290,7 +3317,7 @@ class QuizAppGUI:
             
             # --- Enable Next button once both clicks are made ---
             if len(self.page_side_clicks) == 2:
-                next_btn.config(state='normal')
+                self._set_primary_button_enabled(next_btn, True)
 
         canvas.bind("<Button-1>", on_click)
 
@@ -3306,7 +3333,7 @@ class QuizAppGUI:
             # reset the scale in case it's needed
             self.image_scale = scale
             # disable Next button until two clicks again
-            next_btn.config(state='disabled')
+            self._set_primary_button_enabled(next_btn, False)
 
         btn_frame = ttk.Frame(self.center_frame)
         btn_frame.pack(pady=6)
@@ -4340,7 +4367,7 @@ class QuizAppGUI:
 
         def update_gsheets():
             if self.update_gsheet_from_extracted_data():
-                self.google_sync_button.configure(state="disabled")
+                self._set_primary_button_enabled(self.google_sync_button, False)
 
         class_info = self.classes.get(self.class_combo.get(), {})
         if (self.google_sheets_enabled_var.get()
@@ -4464,7 +4491,7 @@ class QuizAppGUI:
                 if hasattr(self, "update_gradebook_btn"):
                     self.update_gradebook_btn.state(["!disabled"])
                 if hasattr(self, "google_sync_button"):
-                    self.google_sync_button.configure(state="normal")
+                    self._set_primary_button_enabled(self.google_sync_button, True)
                 
                 # ---- UPDATE extracted_data to match the edited value ----
                 """Note - this is for my personal version to integrate extracted data for update to google sheets"""
