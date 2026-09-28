@@ -2862,6 +2862,16 @@ class QuizAppGUI:
             back_button.state(["disabled"])
         ttk.Button(navigation, text="Home", command=self.reset_panels).pack(side="left", padx=4)
 
+    def _cancel_pending_redraws(self):
+        """Detach frame resize handlers and cancel their delayed callbacks."""
+        self.right_frame.unbind("<Configure>")
+        for job_id in getattr(self, "_debounce_jobs", {}).values():
+            try:
+                self.root.after_cancel(job_id)
+            except (tk.TclError, ValueError):
+                pass
+        self._debounce_jobs = {}
+
     def _on_run_calibration(self, reset_calibration=True):
         if not self._run_when_dependency_ready(
             "pdf", self._on_run_calibration, "Preparing PDF and calibration tools…"
@@ -2878,6 +2888,7 @@ class QuizAppGUI:
         elif reset_calibration:
             self.google_roster_snapshot = None
         # --- Clear center and right frames ---
+        self._cancel_pending_redraws()
         for widget in self.center_frame.winfo_children():
             widget.destroy()
         for widget in self.right_frame.winfo_children():
@@ -3027,6 +3038,7 @@ class QuizAppGUI:
             self.calibration_data = {"name_box": None, "score_boxes": {}, "score_calibrations": {}}
 
         # --- Clear center frame ---
+        self._cancel_pending_redraws()
         for widget in self.center_frame.winfo_children():
             widget.destroy()
                 
@@ -3199,7 +3211,9 @@ class QuizAppGUI:
         )
         next_btn.pack(side="left", padx=4)
         if topic_index > 0:
-            back_command = lambda: self._on_next_score_calibration(topic_index - 1)
+            back_command = lambda: self._on_next_score_calibration(
+                topic_index - 1, bypass_page_side=True
+            )
         elif self.enable_side_detection.get():
             back_command = lambda: self._prompt_page_side_calibration(topic_index=0)
         else:
@@ -3240,6 +3254,7 @@ class QuizAppGUI:
             return
 
         # --- Clear frames ---
+        self._cancel_pending_redraws()
         for widget in self.center_frame.winfo_children():
             widget.destroy()
         for widget in self.right_frame.winfo_children():
@@ -3382,6 +3397,11 @@ class QuizAppGUI:
 
         # --- Optional: handle frame resize to redraw canvas if needed ---
         def redraw_canvas(event=None):
+            try:
+                if not canvas.winfo_exists():
+                    return
+            except tk.TclError:
+                return
             resized_new, scale_new = self._resize_image_to_fit(cropped_page_side, self.right_frame)
             canvas.config(width=resized_new.width, height=resized_new.height)
             photo_new = ImageTk.PhotoImage(resized_new)
@@ -4933,6 +4953,9 @@ class QuizAppGUI:
         
 
     def reset_panels(self):
+        # Calibration views may have frame-level resize bindings and delayed
+        # redraws that still reference canvases about to be destroyed.
+        self._cancel_pending_redraws()
         self._clear_cached_images()
 
         # Destroy all children recursively
