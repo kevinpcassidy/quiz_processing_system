@@ -24,8 +24,10 @@ helper_names = {
     "install_sample_grading_scale",
     "normalize_score_row",
     "normalize_score_value",
+    "normalize_grading_scale_scores",
     "read_roster_names",
     "release_download_url",
+    "reset_session_file",
     "resource_root",
     "bundled_tool_paths",
     "missing_packaged_resources",
@@ -75,8 +77,10 @@ google_connection_is_connected = namespace["google_connection_is_connected"]
 install_sample_grading_scale = namespace["install_sample_grading_scale"]
 normalize_score_row = namespace["normalize_score_row"]
 normalize_score_value = namespace["normalize_score_value"]
+normalize_grading_scale_scores = namespace["normalize_grading_scale_scores"]
 read_roster_names = namespace["read_roster_names"]
 release_download_url = namespace["release_download_url"]
+reset_session_file = namespace["reset_session_file"]
 unique_gradebook_title = namespace["unique_gradebook_title"]
 version_tuple = namespace["version_tuple"]
 write_roster_names = namespace["write_roster_names"]
@@ -179,6 +183,14 @@ class GoogleHelperTests(unittest.TestCase):
         self.assertEqual(normalize_score_value(" Skip "), "Skip")
         self.assertEqual(normalize_score_row(["00123", "10.0", "7.5"]), ["00123", 10, 7.5])
 
+    def test_grading_scale_normalization_preserves_integer_and_decimal_types(self):
+        self.assertEqual(
+            normalize_grading_scale_scores([5, 6.0, "7", "8.5", "skip"]),
+            [5, 6, 7, 8.5, "Skip"],
+        )
+        with self.assertRaises(ValueError):
+            normalize_grading_scale_scores(["not a score"])
+
     def test_google_progress_status_animates_and_reports_slow_connections(self):
         self.assertEqual(
             format_google_progress_status("preparing", 2, 1),
@@ -235,6 +247,14 @@ class GoogleHelperTests(unittest.TestCase):
             with open(path, encoding="utf-8") as handle:
                 self.assertEqual(json.load(handle), {"new": True})
             self.assertFalse(os.path.exists(f"{path}.tmp"))
+
+    def test_reset_session_file_removes_stale_data_and_allows_missing_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "saved_topics.json")
+            Path(path).write_text('["Old topic"]', encoding="utf-8")
+            reset_session_file(path)
+            self.assertFalse(os.path.exists(path))
+            reset_session_file(path)
 
     def test_sample_grading_scale_is_saved_and_replaces_same_named_scale(self):
         with tempfile.TemporaryDirectory() as directory:
