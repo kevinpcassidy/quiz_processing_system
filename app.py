@@ -343,6 +343,17 @@ def should_upload_score(value, conflict_action, topic_exists):
     return bool(value is not None and str(value).strip() and str(value).strip().casefold() != "skip")
 
 
+def close_image_sequence(images):
+    """Release image resources in an iterable, ignoring already-closed images."""
+    for image in images or ():
+        close = getattr(image, "close", None)
+        if close:
+            try:
+                close()
+            except Exception:
+                pass
+
+
 def google_connection_is_connected(status):
     """Return whether a Google connection status represents confirmed success."""
     return str(status).strip() == GOOGLE_CONNECTED_STATUS
@@ -1205,6 +1216,10 @@ class QuizAppGUI:
 
     def _set_selected_pdf(self, file_path):
         """Select a PDF path and reset state from any previous extraction."""
+        self.stop_processing = True
+        self._cancel_pending_redraws()
+        self._clear_cached_images()
+        self.extracted_data = []
         self.pdf_path_var.set(file_path)
         self.completed_steps = {
             "pdf_selected": False,
@@ -3474,7 +3489,7 @@ class QuizAppGUI:
                 return
 
             # Pass result back to main thread safely
-            self.root.after(0, lambda: self._on_pages_loaded(pages, start))
+            self.root.after(0, lambda: self._on_pages_loaded(pages, start, pdf_path))
 
         except Exception as e:
             self.root.after(
@@ -3601,25 +3616,29 @@ class QuizAppGUI:
         )
         self.pdf_thread.start()
 
-    def _on_pages_loaded(self, pages, start_time):
-        if self.stop_processing:
+    def _on_pages_loaded(self, pages, start_time, pdf_path):
+        if self.stop_processing or os.path.abspath(pdf_path) != os.path.abspath(self.pdf_path_var.get()):
+            close_image_sequence(pages)
             return
 
         load_time = time.time() - start_time
         est_per_page = load_time / max(1, len(pages))
 
-        # Show progress for each page
-        for i in range(len(pages)):
-            if self.stop_processing:
-                return
+        # Explicitly release all converted pages whether processing completes,
+        # is stopped, or is interrupted by an error.
+        try:
+            for i in range(len(pages)):
+                if self.stop_processing:
+                    return
 
-            eta = int((len(pages) - i) * est_per_page)
-            msg = f"Loaded {i+1}/{len(pages)} pages\nEstimated time remaining: {eta}s"
-            self._show_extraction_progress(msg)
-            self.root.update_idletasks()
+                eta = int((len(pages) - i) * est_per_page)
+                msg = f"Loaded {i+1}/{len(pages)} pages\nEstimated time remaining: {eta}s"
+                self._show_extraction_progress(msg)
+                self.root.update_idletasks()
 
-        # Now proceed to OCR + extraction
-        self._proceed_with_extraction(pages)
+            self._proceed_with_extraction(pages)
+        finally:
+            close_image_sequence(pages)
 
         
     def _proceed_with_extraction(self, all_pages):
@@ -5017,11 +5036,7 @@ class QuizAppGUI:
         for attr in image_attrs:
             if hasattr(self, attr):
                 image = getattr(self, attr)
-                if hasattr(image, "close"):
-                    try:
-                        image.close()
-                    except Exception:
-                        pass
+                close_image_sequence([image])
                 setattr(self, attr, None)
 
         self.right_photo = None
@@ -6095,24 +6110,28 @@ class QuizAppGUI:
             justify="left",
         ).pack(fill="x", padx=24, pady=(22, 12))
 
+        ttk.Style(popup).configure("Preferred.TRadiobutton", font=("Segoe UI", 9, "bold"))
         options = (
-            (
-                "replace",
-                "Replace the existing column with this batch",
-                "Old scores in matching columns will be erased.",
-            ),
             (
                 "merge",
                 "Add scores to the existing column",
                 "Old scores will be preserved; only nonblank scores from this batch will be added.",
+                "Preferred.TRadiobutton",
+            ),
+            (
+                "replace",
+                "Replace the existing column with this batch",
+                "Old scores in matching columns will be erased.",
+                "TRadiobutton",
             ),
             (
                 "new",
                 "Create a new column for this batch",
                 "Existing columns will be preserved and new headers will use _1, _2, and so on.",
+                "TRadiobutton",
             ),
         )
-        for value, label, description in options:
+        for value, label, description, style_name in options:
             option_frame = ttk.Frame(popup)
             option_frame.pack(fill="x", padx=24, pady=4)
             ttk.Radiobutton(
@@ -6120,6 +6139,7 @@ class QuizAppGUI:
                 text=label,
                 value=value,
                 variable=selection,
+                style=style_name,
             ).pack(anchor="w")
             ttk.Label(
                 option_frame,
