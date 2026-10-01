@@ -16,8 +16,10 @@ source = Path("app.py").read_text(encoding="utf-8")
 module = ast.parse(source)
 helper_names = {
     "atomic_write_json",
+    "close_image_sequence",
     "excel_sheet_title",
     "ensure_worksheet_size",
+    "existing_topic_headers",
     "format_google_progress_status",
     "google_connection_is_connected",
     "format_local_timestamp",
@@ -25,6 +27,8 @@ helper_names = {
     "normalize_score_row",
     "normalize_score_value",
     "normalize_grading_scale_scores",
+    "should_upload_score",
+    "topic_upload_destinations",
     "read_roster_names",
     "release_download_url",
     "reset_session_file",
@@ -34,6 +38,7 @@ helper_names = {
     "configure_tesseract",
     "configure_pdf2image",
     "unique_gradebook_title",
+    "unique_topic_header",
     "version_tuple",
     "write_roster_names",
 }
@@ -69,8 +74,10 @@ namespace = {
 }
 exec(compile(ast.Module(body=wanted, type_ignores=[]), "app.py", "exec"), namespace)
 atomic_write_json = namespace["atomic_write_json"]
+close_image_sequence = namespace["close_image_sequence"]
 excel_sheet_title = namespace["excel_sheet_title"]
 ensure_worksheet_size = namespace["ensure_worksheet_size"]
+existing_topic_headers = namespace["existing_topic_headers"]
 format_local_timestamp = namespace["format_local_timestamp"]
 format_google_progress_status = namespace["format_google_progress_status"]
 google_connection_is_connected = namespace["google_connection_is_connected"]
@@ -78,10 +85,13 @@ install_sample_grading_scale = namespace["install_sample_grading_scale"]
 normalize_score_row = namespace["normalize_score_row"]
 normalize_score_value = namespace["normalize_score_value"]
 normalize_grading_scale_scores = namespace["normalize_grading_scale_scores"]
+should_upload_score = namespace["should_upload_score"]
+topic_upload_destinations = namespace["topic_upload_destinations"]
 read_roster_names = namespace["read_roster_names"]
 release_download_url = namespace["release_download_url"]
 reset_session_file = namespace["reset_session_file"]
 unique_gradebook_title = namespace["unique_gradebook_title"]
+unique_topic_header = namespace["unique_topic_header"]
 version_tuple = namespace["version_tuple"]
 write_roster_names = namespace["write_roster_names"]
 resource_root = namespace["resource_root"]
@@ -300,6 +310,57 @@ class GoogleHelperTests(unittest.TestCase):
         worksheet.resize_calls.clear()
         ensure_worksheet_size(worksheet, required_rows=20, required_columns=6)
         self.assertEqual(worksheet.resize_calls, [])
+
+    def test_existing_topic_headers_match_case_insensitively(self):
+        self.assertEqual(
+            existing_topic_headers(["Fractions", "Geometry", "NEW"], ["Name", "fractions", "New"]),
+            ["Fractions", "NEW"],
+        )
+
+    def test_unique_topic_header_uses_next_available_suffix(self):
+        self.assertEqual(
+            unique_topic_header("Fractions", ["Name", "fractions", "Fractions_1", "FRACTIONS_2"]),
+            "Fractions_3",
+        )
+
+    def test_new_column_destinations_are_unique_for_each_collision(self):
+        self.assertEqual(
+            topic_upload_destinations(
+                ["Fractions", "Geometry", "Fractions"],
+                ["Name", "fractions"],
+                "new",
+            ),
+            ["Fractions_1", "Geometry", "Fractions_2"],
+        )
+
+    def test_existing_destinations_reuse_original_header_casing(self):
+        self.assertEqual(
+            topic_upload_destinations(["FRACTIONS", "Geometry"], ["Name", "Fractions"], "merge"),
+            ["Fractions", "Geometry"],
+        )
+
+    def test_merge_only_uploads_nonblank_scores_to_existing_topics(self):
+        self.assertFalse(should_upload_score("", "merge", True))
+        self.assertFalse(should_upload_score("  ", "merge", True))
+        self.assertFalse(should_upload_score("Skip", "merge", True))
+        self.assertTrue(should_upload_score(0, "merge", True))
+        self.assertTrue(should_upload_score("8", "merge", True))
+
+    def test_replace_and_new_topics_upload_blank_scores(self):
+        self.assertTrue(should_upload_score("", "replace", True))
+        self.assertTrue(should_upload_score("", "new", True))
+        self.assertTrue(should_upload_score("", "merge", False))
+
+    def test_close_image_sequence_releases_every_image_and_tolerates_errors(self):
+        closed = []
+        images = [
+            SimpleNamespace(close=lambda: closed.append("first")),
+            SimpleNamespace(close=lambda: (_ for _ in ()).throw(OSError("already closed"))),
+            SimpleNamespace(close=lambda: closed.append("third")),
+        ]
+        close_image_sequence(images)
+        self.assertEqual(closed, ["first", "third"])
+        close_image_sequence(None)
 
     def test_local_timestamp_has_date_and_time(self):
         formatted = format_local_timestamp("2026-08-25T15:42:18+00:00")
