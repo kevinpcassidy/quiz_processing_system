@@ -48,7 +48,8 @@ The application creates `CURRENTYEAR-NEXTYEAR Quiz Processing System`, adding `_
 - Use a unique, non-empty header for every used score column.
 - Do not merge cells in the roster/grade area.
 - Teachers may rename the spreadsheet or tabs; stable Google IDs preserve the link.
-- Existing topic columns are updated. New topics are appended after the last used header.
+- When a topic already exists, teachers can replace its scores, preserve old scores and add only nonblank new
+  scores, or append the batch in a uniquely numbered column. New topics are appended after the last used header.
 - Edit Google-backed students in column A, then refresh rosters or restart.
 
 ## Sample walkthrough

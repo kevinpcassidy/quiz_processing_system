@@ -301,6 +301,48 @@ def ensure_worksheet_size(worksheet, required_rows=None, required_columns=None):
         worksheet.resize(rows=rows or None, cols=columns or None)
 
 
+def existing_topic_headers(topic_names, headers):
+    """Return current topics that already exist in the header row."""
+    existing = {str(header).strip().casefold() for header in headers if str(header).strip()}
+    return [topic for topic in topic_names if topic.casefold() in existing]
+
+
+def unique_topic_header(topic, headers):
+    """Return a case-insensitively unique topic header using numeric suffixes."""
+    existing = {str(header).strip().casefold() for header in headers if str(header).strip()}
+    if topic.casefold() not in existing:
+        return topic
+    suffix = 1
+    while f"{topic}_{suffix}".casefold() in existing:
+        suffix += 1
+    return f"{topic}_{suffix}"
+
+
+def topic_upload_destinations(topic_names, headers, conflict_action):
+    """Resolve each current topic to its destination header for an upload."""
+    reserved = list(headers)
+    destinations = []
+    existing = {str(header).strip().casefold(): str(header).strip() for header in headers if str(header).strip()}
+    for topic in topic_names:
+        key = topic.casefold()
+        if key in existing and conflict_action == "new":
+            destination = unique_topic_header(topic, reserved)
+        else:
+            destination = existing.get(key, topic)
+        destinations.append(destination)
+        if destination.casefold() not in {str(header).strip().casefold() for header in reserved}:
+            reserved.append(destination)
+        existing.setdefault(destination.casefold(), destination)
+    return destinations
+
+
+def should_upload_score(value, conflict_action, topic_exists):
+    """Return whether a preview score should be sent to Google Sheets."""
+    if conflict_action != "merge" or not topic_exists:
+        return True
+    return bool(value is not None and str(value).strip() and str(value).strip().casefold() != "skip")
+
+
 def google_connection_is_connected(status):
     """Return whether a Google connection status represents confirmed success."""
     return str(status).strip() == GOOGLE_CONNECTED_STATUS
@@ -5936,7 +5978,8 @@ class QuizAppGUI:
             "example roster and setup directions; you can map it as a practice class. Create one tab for each roster. "
             "Use 'Name' in cell A1 and enter one student name per row in column A. Rename the spreadsheet or tabs "
             "whenever you like; the program tracks their stable IDs. Do not merge cells in the roster or grade area. "
-            "Existing topic headers are reused and new quiz topics are appended after the last used header. After "
+            "When a topic header already exists, syncing grades lets you replace its scores, add only new scores, "
+            "or create a uniquely numbered column. New quiz topics are appended after the last used header. After "
             "editing rosters, click 'Refresh Rosters Now' or restart the program."
         )
         ttk.Label(popup, text=instructions, wraplength=650, justify="left").pack(padx=20, pady=10)
@@ -6029,9 +6072,87 @@ class QuizAppGUI:
                     "Google Rosters",
                     f"Refreshed {succeeded} of {total} rosters. Existing local caches were preserved for failures.",
                 )
+
+    def _prompt_topic_conflict_action(self, conflicting_topics):
+        """Ask how existing Google Sheets topic columns should be handled."""
+        popup = tk.Toplevel(self.root)
+        popup.title("Topic Already Exists")
+        popup.transient(self.root)
+        self._position_popup(popup, 590, 420)
+        popup.grab_set()
+
+        result = {"action": None}
+        selection = tk.StringVar(value="")
+        topics_text = ", ".join(conflicting_topics)
+        ttk.Label(
+            popup,
+            text=(
+                "The following topic name(s) already exist in your gradebook:\n"
+                f"{topics_text}\n\n"
+                "Choose one option to proceed with the grade upload:"
+            ),
+            wraplength=540,
+            justify="left",
+        ).pack(fill="x", padx=24, pady=(22, 12))
+
+        options = (
+            (
+                "replace",
+                "Replace the existing column with this batch",
+                "Old scores in matching columns will be erased.",
+            ),
+            (
+                "merge",
+                "Add scores to the existing column",
+                "Old scores will be preserved; only nonblank scores from this batch will be added.",
+            ),
+            (
+                "new",
+                "Create a new column for this batch",
+                "Existing columns will be preserved and new headers will use _1, _2, and so on.",
+            ),
+        )
+        for value, label, description in options:
+            option_frame = ttk.Frame(popup)
+            option_frame.pack(fill="x", padx=24, pady=4)
+            ttk.Radiobutton(
+                option_frame,
+                text=label,
+                value=value,
+                variable=selection,
+            ).pack(anchor="w")
+            ttk.Label(
+                option_frame,
+                text=description,
+                wraplength=500,
+                foreground="#555555",
+            ).pack(anchor="w", padx=(24, 0))
+
+        buttons = ttk.Frame(popup)
+        buttons.pack(pady=(16, 20))
+        proceed_button = self._primary_button(buttons, text="Proceed")
+        self._set_primary_button_enabled(proceed_button, False)
+
+        def proceed():
+            result["action"] = selection.get()
+            popup.destroy()
+
+        def cancel():
+            popup.destroy()
+
+        proceed_button.configure(command=proceed)
+        proceed_button.pack(side="left", padx=6)
+        ttk.Button(buttons, text="Cancel", command=cancel).pack(side="left", padx=6)
+        selection.trace_add(
+            "write",
+            lambda *_: self._set_primary_button_enabled(proceed_button, bool(selection.get())),
+        )
+        popup.protocol("WM_DELETE_WINDOW", cancel)
+        popup.wait_window()
+        return result["action"]
     
     def update_gsheet_from_extracted_data(self):
-        """Update existing topic columns and append only genuinely new topics."""
+        """Upload scores after resolving any existing topic-column conflicts."""
         class_name = self.class_combo.get()
         class_info = self.classes.get(class_name, {})
         if not isinstance(class_info, dict) or class_info.get("source") != "google_sheet":
@@ -6061,20 +6182,28 @@ class QuizAppGUI:
                 return False
             header_lookup = {value.strip().casefold(): index + 1 for index, value in enumerate(headers) if value.strip()}
             topic_names = [value.get().strip() for value in self.topic_vars if value.get().strip()]
-            new_topic_count = sum(topic.casefold() not in header_lookup for topic in topic_names)
+            conflicting_topics = existing_topic_headers(topic_names, headers)
+            conflict_action = None
+            if conflicting_topics:
+                conflict_action = self._prompt_topic_conflict_action(conflicting_topics)
+                if conflict_action is None:
+                    return False
+            destinations = topic_upload_destinations(topic_names, headers, conflict_action)
+            topic_exists = [topic.casefold() in header_lookup for topic in topic_names]
+            new_topic_count = sum(destination.casefold() not in header_lookup for destination in destinations)
             ensure_worksheet_size(
                 worksheet,
                 required_rows=max(len(names) + 1, 1),
                 required_columns=len(headers) + new_topic_count,
             )
-            for topic in topic_names:
-                key = topic.casefold()
+            for destination in destinations:
+                key = destination.casefold()
                 if key not in header_lookup:
-                    headers.append(topic)
+                    headers.append(destination)
                     header_lookup[key] = len(headers)
                     header_cell = gspread.utils.rowcol_to_a1(1, len(headers))
                     worksheet.update(
-                        values=[[topic]],
+                        values=[[destination]],
                         range_name=header_cell,
                         value_input_option="USER_ENTERED",
                     )
@@ -6089,14 +6218,17 @@ class QuizAppGUI:
                 row_number = row_lookup.get(name)
                 if not row_number:
                     continue  # The Google roster remains authoritative.
-                for topic_index, topic in enumerate(topic_names, start=1):
+                for topic_index, (destination, existed) in enumerate(
+                        zip(destinations, topic_exists), start=1):
                     value = values[topic_index] if topic_index < len(values) else ""
+                    if not should_upload_score(value, conflict_action, existed):
+                        continue
                     if isinstance(value, str) and value.strip().casefold() == "skip":
                         value = ""
                     else:
                         value = normalize_score_value(value)
                     updates.append({
-                        "range": gspread.utils.rowcol_to_a1(row_number, header_lookup[topic.casefold()]),
+                        "range": gspread.utils.rowcol_to_a1(row_number, header_lookup[destination.casefold()]),
                         "values": [[value]],
                     })
             if updates:
